@@ -100,3 +100,39 @@ def test_large_peaks_redraw_fast(qtbot):
     t = time.perf_counter()
     w._redraw()
     assert time.perf_counter() - t < 0.1
+
+
+def _click_at_frame(qtbot, w, frame):
+    from PySide6.QtCore import QPointF, Qt
+
+    vb = w._plot.getPlotItem().vb
+    sp = vb.mapViewToScene(QPointF(frame, 0.5))
+    pos = w._plot.mapFromScene(sp)
+    qtbot.mouseClick(w._plot.viewport(), Qt.LeftButton, pos=pos)
+
+
+def test_real_click_on_empty_area_seeks(qtbot):
+    w = make(qtbot)
+    w.resize(600, 300)
+    w.append_peaks(np.zeros((100, 2), np.float32))
+    w._redraw()
+    w.set_editable(True)
+    w.set_selection(100, 900)
+    with qtbot.waitSignal(w.seekRequested, timeout=1000) as sig:
+        _click_at_frame(qtbot, w, 500)
+    assert abs(sig.args[0] - 500) <= 20
+
+
+def test_real_click_on_marker_or_playhead_does_not_seek(qtbot):
+    w = make(qtbot)
+    w.resize(600, 300)
+    w.append_peaks(np.zeros((100, 2), np.float32))
+    w._redraw()
+    w.set_editable(True)
+    w.set_selection(100, 900)
+    w.set_playhead(500)
+    got = []
+    w.seekRequested.connect(got.append)
+    for f in (100, 900, 500):
+        _click_at_frame(qtbot, w, f)
+    assert got == []

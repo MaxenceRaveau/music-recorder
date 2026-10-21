@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, Qt, QTimer, Signal
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from audiorec.export import MIN_SELECTION_S
 from audiorec.peaks import block_frames
 
 HINT_TEXT = "Waveform appears here when you start recording"
+_LINE_HIT_PX = 4  # clicks this close to a marker/playhead are not seeks
 _MAX_COLUMNS = 4000  # more than a screen can show; keeps redraw cheap
 
 
@@ -205,6 +206,13 @@ class WaveformView(QWidget):
         vb = self._plot.getPlotItem().vb
         if not vb.sceneBoundingRect().contains(ev.scenePos()):
             return
+        # A plain click on a line is not accepted by InfiniteLine, so skip it here.
+        sx = ev.scenePos().x()
+        for ln in (self._start_line, self._end_line, self._playhead):
+            if ln.isVisible():
+                lx = vb.mapViewToScene(QPointF(ln.value(), 0)).x()
+                if abs(sx - lx) <= _LINE_HIT_PX:
+                    return
         self._on_click_view_x(vb.mapSceneToView(ev.scenePos()).x())
 
     def _on_click_view_x(self, x: float) -> None:
