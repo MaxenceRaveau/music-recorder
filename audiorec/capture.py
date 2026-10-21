@@ -182,8 +182,7 @@ class CaptureLoop:
         self._status_interval_s = status_interval_s
         self._clock = clock
         self._stop = threading.Event()
-        self._pause_req = threading.Event()
-        self._resume_req = threading.Event()
+        self._want_paused = False       # last pause()/resume() wins, order kept
         self._frames = 0
         self._peak = float("-inf")
 
@@ -192,21 +191,22 @@ class CaptureLoop:
         return self._frames
 
     def pause(self) -> None:
-        self._pause_req.set()
+        self._want_paused = True
 
     def resume(self) -> None:
-        self._resume_req.set()
+        self._want_paused = False
 
     def stop(self) -> None:
         self._stop.set()
 
-    def _write(self, pcm: bytes) -> None:
+    def _write(self, pcm: bytes, real: bool = True) -> None:
         try:
             self._sink.write(pcm)
         except OSError as e:
             raise _SinkFailed(str(e)) from e
         self._frames += len(pcm) // BYTES_PER_FRAME
-        self._peak = max(self._peak, peak_dbfs(pcm))
+        if real:                        # padding must not register as a level
+            self._peak = max(self._peak, peak_dbfs(pcm))
         if self._on_pcm:
             self._on_pcm(pcm)
 
@@ -225,13 +225,11 @@ class CaptureLoop:
         clock.start(now)
         try:
             while not self._stop.is_set():
-                if self._pause_req.is_set():
-                    self._pause_req.clear()
-                    if not clock.paused:
-                        self._drain()           # keep audio captured before the pause
-                        clock.pause(self._clock())
-                if self._resume_req.is_set():
-                    self._resume_req.clear()
+                want_paused = self._want_paused
+                if want_paused and not clock.paused:
+                    self._drain()               # keep audio captured before the pause
+                    clock.pause(self._clock())
+                elif not want_paused and clock.paused:
                     now = self._clock()
                     clock.resume(now)
                     last_data = now
@@ -245,7 +243,7 @@ class CaptureLoop:
                     if not clock.paused and now - last_data >= GAP_TOLERANCE_S:
                         behind = clock.frames_due(now) - self._frames
                         if behind > 0:
-                            self._write(bytes(behind * BYTES_PER_FRAME))
+                            self._write(bytes(behind * BYTES_PER_FRAME), real=False)
                 else:
                     if not clock.paused:
                         last_data = self._clock()

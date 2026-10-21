@@ -107,3 +107,23 @@ def test_loop_reports_status():
     loop.run()
     assert got and 0 < got[-1].frames_written <= loop.frames_written
     assert not got[-1].paused
+
+
+def test_loop_padding_does_not_register_as_peak():
+    got: list[Status] = []
+    loop, _, _, _ = make(lambda l: ["empty"] * 10 + [l.stop],
+                         on_status=got.append, status_interval_s=0.2)
+    loop.run()
+    assert loop.frames_written > 0
+    assert got and all(st.peak_dbfs == float("-inf") for st in got)
+
+
+def test_loop_pause_resume_pause_before_processing_ends_paused():
+    got: list[Status] = []
+    loop, _, _, _ = make(lambda l: ["empty"] * 10 + [l.stop], on_status=got.append)
+    loop.pause()
+    loop.resume()
+    loop.pause()
+    loop.run()
+    assert loop.frames_written == 0
+    assert got and got[-1].paused
