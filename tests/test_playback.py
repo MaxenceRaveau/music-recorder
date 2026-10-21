@@ -1,6 +1,8 @@
 """Player tests: the PortAudio callback body is driven directly, no device."""
 from __future__ import annotations
 
+import threading
+
 import numpy as np
 import pytest
 import sounddevice
@@ -18,9 +20,11 @@ class FakeStream:
 
     def stop(self):
         self.stopped = True
+        self.stop_thread = threading.get_ident()
 
     def close(self):
         self.closed = True
+        self.close_thread = threading.get_ident()
 
 
 def make_player():
@@ -112,3 +116,79 @@ def test_load_while_playing_stops_first():
     p.play()
     p.load(ramp(10), offset=50)
     assert not p.playing and streams[0].closed and p.position == 50
+
+
+def _run_cb_on_thread(stream, frames):
+    out = np.zeros((frames, 2), dtype=np.float32)
+    box = {}
+
+    def target():
+        box["tid"] = threading.get_ident()
+        try:
+            stream.kw["callback"](out, frames, None, None)
+        except sounddevice.CallbackStop:
+            box["stopped"] = True
+
+    t = threading.Thread(target=target)
+    t.start()
+    t.join()
+    return box
+
+
+def test_on_finished_calling_stop_does_not_close_on_callback_thread():
+    p, streams = make_player()
+    p.load(ramp(10), offset=0)
+    p.on_finished = p.stop
+    p.play()
+    box = _run_cb_on_thread(streams[0], 20)
+    assert box["stopped"]
+    assert not streams[0].stopped and not streams[0].closed
+    assert not p.playing and p.position == 0
+    p.pause()  # next call from another thread retires it
+    assert streams[0].stopped and streams[0].closed
+    assert streams[0].close_thread != box["tid"]
+
+
+def test_on_finished_calling_play_restarts_safely():
+    p, streams = make_player()
+    p.load(ramp(100), offset=1000)
+    p.on_finished = lambda: p.play(1050)
+    p.play()
+    p._pos = 95  # near the end
+    box = _run_cb_on_thread(streams[0], 20)
+    assert not streams[0].stopped and not streams[0].closed
+    assert len(streams) == 2 and streams[1].started
+    assert p.playing and p.position == 1050
+    p.pause()
+    assert streams[0].closed and streams[1].closed
+    assert streams[0].close_thread != box["tid"]
+
+
+def test_play_factory_failure_leaves_not_playing():
+    def boom(**kw):
+        raise RuntimeError("no device")
+
+    p = Player(48000, stream_factory=boom)
+    p.load(ramp(10), offset=0)
+    with pytest.raises(RuntimeError):
+        p.play()
+    assert not p.playing
+
+
+def test_play_start_failure_closes_stream_and_not_playing():
+    made = []
+
+    class BadStart(FakeStream):
+        def start(self):
+            raise RuntimeError("start failed")
+
+    def factory(**kw):
+        made.append(BadStart(**kw))
+        return made[-1]
+
+    p = Player(48000, stream_factory=factory)
+    p.load(ramp(10), offset=0)
+    with pytest.raises(RuntimeError):
+        p.play()
+    assert not p.playing and made[0].closed
+    p.pause()  # must not raise or touch the dead stream again
