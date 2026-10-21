@@ -1,0 +1,10 @@
+PyAudioWPatch
+lameenc
+numpy
+PySide6
+pyqtgraph
+sounddevice
+soundfile
+mutagen
+pytest
+pytest-qt
