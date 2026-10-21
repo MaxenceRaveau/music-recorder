@@ -416,7 +416,7 @@ class MainWindow(QMainWindow):
         self._fire(Event.STOP if reason.kind == "user" else Event.CAPTURE_ENDED)
         self.waveform.set_editable(True)
         self._reset_meter()
-        self._player, self._player_dirty = None, True
+        self._release_player()
         self._play_from = self._selection()[0]
         self.save_panel.start_naming(self.session.started, self._format())
         self._update_times()
@@ -452,7 +452,8 @@ class MainWindow(QMainWindow):
             self._player.on_finished = self._player_bridge.finished.emit
         if self._player_dirty:
             start, end = self._selection()
-            self._player.load(self.session.read_frames(start, end), start)
+            # A memory-mapped view: no copy, so this stays instant on long takes.
+            self._player.load(self.session.frames_view(start, end), start)
             self._player_dirty = False
         return self._player
 
@@ -507,6 +508,13 @@ class MainWindow(QMainWindow):
         self._reload_timer.stop()
         if self._player is not None:
             self._player.stop()
+
+    def _release_player(self) -> None:
+        """Drop the player and its memory-mapped frames; Windows won't delete a mapped file."""
+        self._stop_playback()
+        if self._player is not None:
+            self._player.unload()
+        self._player, self._player_dirty = None, True
 
     # ---- save panel -------------------------------------------------------
     def _on_format_changed(self) -> None:
@@ -615,8 +623,7 @@ class MainWindow(QMainWindow):
         # Only in STOPPED/SAVING, so the worker is done; stop everything else
         # that could still touch the folder.
         self._fields_timer.stop()
-        self._stop_playback()
-        self._player = None
+        self._release_player()
         self.session.delete()
         self.session = None
 
@@ -648,7 +655,7 @@ class MainWindow(QMainWindow):
                 sig.disconnect()
             QThreadPool.globalInstance().waitForDone()
             self._end_export()
-        self._stop_playback()
+        self._release_player()
         if self._fields_timer.isActive():
             self._fields_timer.stop()
             self._save_fields()

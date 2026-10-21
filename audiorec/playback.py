@@ -45,6 +45,13 @@ class Player:
             self._offset = offset
             self._pos = 0
 
+    def unload(self) -> None:
+        """Stop and drop the loaded frames (releases a memory-mapped file)."""
+        self.stop()
+        with self._lock:
+            self._frames = np.zeros((0, 2), dtype=np.int16)
+            self._offset = 0
+
     def play(self, from_frame: int | None = None) -> None:
         self._close_stream()
         with self._lock:

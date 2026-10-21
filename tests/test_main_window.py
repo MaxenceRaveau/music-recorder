@@ -3,7 +3,10 @@ replaced through the window's wrapper methods, playback uses a fake stream."""
 from __future__ import annotations
 
 import threading
+import time
 import wave
+
+import numpy as np
 
 import pytest
 from PySide6.QtCore import QSettings
@@ -300,3 +303,38 @@ def test_close_while_recording_keeps_session(qtbot, make_window):
     win.close()
     assert win.provider.sources[-1].closed
     assert folder.exists()
+
+
+def test_discard_after_playing_really_removes_folder(qtbot, make_window):
+    win = make_window()
+    record(qtbot, win)
+    stop(qtbot, win)
+    win.main_button.click()                     # loads the session's frames into the player
+    assert win._player.playing
+    assert isinstance(win._player._frames, np.memmap)
+    out = np.zeros((100, 2), np.float32)
+    win._player._fill(out, 100)                 # the callback body slices the view as-is
+    expected = win.session.read_frames(0, 100) / 32768.0
+    assert np.allclose(out, expected)
+    folder = win.session.folder
+    win.discard_button.click()
+    assert not folder.exists()                  # no lingering mapping kept the file open
+
+
+def test_player_load_is_fast_on_long_session(qtbot, make_window):
+    win = make_window()
+    record(qtbot, win)
+    stop(qtbot, win)
+    minutes10 = 10 * 60 * RATE
+    with open(win.session.folder / "audio.pcm", "ab") as f:
+        f.truncate(minutes10 * 4)               # sparse zeros: 10 min of silence
+    win.waveform.append_peaks(np.zeros((60_000, 2), np.float32))
+    win.waveform.set_editable(True)            # flushes peaks, selects all
+    assert win._selection() == (0, minutes10)
+    win._player_dirty = True
+    t0 = time.perf_counter()
+    win._ensure_player_loaded()
+    elapsed = time.perf_counter() - t0
+    print(f"\n_ensure_player_loaded on 10 min: {elapsed * 1000:.1f} ms")
+    assert elapsed < 0.05
+    win.discard_button.click()

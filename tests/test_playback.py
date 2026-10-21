@@ -192,3 +192,16 @@ def test_play_start_failure_closes_stream_and_not_playing():
         p.play()
     assert not p.playing and made[0].closed
     p.pause()  # must not raise or touch the dead stream again
+
+
+def test_unload_stops_and_drops_frames():
+    p, streams = make_player()
+    frames = ramp(100)
+    p.load(frames, offset=10)
+    p.play()
+    p.unload()
+    assert not p.playing
+    assert streams[0].closed
+    assert p._frames is not frames and len(p._frames) == 0
+    p.play()                            # nothing loaded: a no-op, not an error
+    assert not p.playing

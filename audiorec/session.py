@@ -120,6 +120,20 @@ class Session:
         chunks = list(self.iter_frames(start, end))
         return np.concatenate(chunks) if chunks else np.empty((0, 2), dtype=np.int16)
 
+    def frames_view(self, start: int, end: int) -> np.ndarray:
+        """Read-only (n, 2) int16 view of [start, end), memory-mapped, not copied.
+
+        Windows keeps the file locked while any view is alive, so drop every
+        reference before delete().
+        """
+        frames = self.frames
+        start = max(0, start)
+        end = min(end, frames)
+        if start >= end:                # memmap refuses 0-byte files
+            return np.empty((0, 2), dtype=np.int16)
+        mm = np.memmap(self._pcm_path, dtype=np.int16, mode="r", shape=(frames, 2))
+        return mm[start:end]
+
     def delete(self) -> None:
         self.close()
         shutil.rmtree(self.folder, ignore_errors=True)

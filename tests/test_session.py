@@ -106,3 +106,30 @@ def test_write_not_blocked_by_slow_metadata_write(tmp_path, monkeypatch):
     s.close()
     assert finished, "write() blocked behind a metadata write"
     assert s.frames == 3 and s.fields["title"] == "x"
+
+
+def test_frames_view_matches_read_frames_and_is_read_only(tmp_path):
+    s = Session.create(tmp_path, 48000, "d")
+    s.write(stereo(np.arange(100)))
+    v = s.frames_view(10, 30)
+    assert v.dtype == np.int16 and v.shape == (20, 2)
+    assert np.array_equal(v, s.read_frames(10, 30))
+    assert not v.flags.writeable
+    del v
+    s.delete()
+    assert not s.folder.exists()        # the mapping was released, so Windows let it go
+
+
+def test_frames_view_clamps(tmp_path):
+    s = Session.create(tmp_path, 48000, "d")
+    s.write(stereo(np.arange(10)))
+    assert np.array_equal(s.frames_view(-5, 100), s.read_frames(0, 10))
+    assert s.frames_view(8, 3).shape == (0, 2)
+    assert s.frames_view(50, 60).shape == (0, 2)
+    s.close()
+
+
+def test_frames_view_empty_file(tmp_path):
+    s = Session.create(tmp_path, 48000, "d")
+    v = s.frames_view(0, 100)
+    assert v.shape == (0, 2) and v.dtype == np.int16
