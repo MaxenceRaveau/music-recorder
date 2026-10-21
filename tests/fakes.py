@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import queue
+import threading
+import time
 from typing import Callable
+
+import numpy as np
 
 from audiorec.capture import DeviceLost
 
@@ -60,3 +64,29 @@ class ListSink:
     @property
     def data(self) -> bytes:
         return b"".join(self.chunks)
+
+
+class SineSource:
+    """Endless ChunkSource paced like a real device: a 440 Hz tone in 10 ms
+    chunks until closed. Setting ``lose`` makes the next poll raise DeviceLost."""
+
+    def __init__(self, rate: int, channels: int = 2) -> None:
+        self.rate, self.channels = rate, channels
+        self._chunk = max(1, rate // 100)
+        self._n = 0
+        self.lose = threading.Event()
+        self.closed = False
+
+    def get(self, timeout: float) -> bytes:
+        if self.lose.is_set():
+            raise DeviceLost("device unplugged")
+        if timeout == 0:                # drain: nothing queued in a fake
+            raise queue.Empty
+        time.sleep(self._chunk / self.rate)
+        t = (np.arange(self._chunk) + self._n) / self.rate
+        self._n += self._chunk
+        x = (np.sin(2 * np.pi * 440 * t) * 8000).astype(np.int16)
+        return np.repeat(x[:, None], self.channels, axis=1).tobytes()
+
+    def close(self) -> None:
+        self.closed = True

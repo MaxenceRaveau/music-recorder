@@ -26,7 +26,7 @@ import pyaudiowpatch as pyaudio
 
 from audiorec.capture import (CaptureLoop, DeviceError, LoopbackSource, Status,
                               list_loopback_devices, pick_device)
-from audiorec.mp3sink import MP3_RATES, Mp3StreamSink
+from audiorec.mp3sink import MP3_RATES, Mp3StreamSink, mp3_rate_message
 
 
 def print_devices(p: pyaudio.PyAudio) -> None:
@@ -39,10 +39,7 @@ def record(p: pyaudio.PyAudio, dev: dict, outdir: Path) -> Path:
     rate = int(dev["defaultSampleRate"])
     channels = int(dev["maxInputChannels"])
     if rate not in MP3_RATES:
-        sys.exit(
-            f"'{dev['name']}' runs at {rate} Hz, MP3 only supports 32/44.1/48 kHz.\n"
-            "Set it to 48000 Hz: Sound settings > device > Properties > Advanced."
-        )
+        sys.exit(mp3_rate_message(dev["name"], rate))
 
     outdir.mkdir(parents=True, exist_ok=True)
     path = outdir / f"desktop_audio_{datetime.now():%Y%m%d_%H%M%S}.mp3"
