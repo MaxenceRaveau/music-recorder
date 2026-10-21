@@ -16,67 +16,23 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import queue
 import sys
-import time
+import threading
 from datetime import datetime
 from pathlib import Path
 
-import lameenc
 import numpy as np
 import pyaudiowpatch as pyaudio
 
-BITRATE_KBPS = 320
-MP3_RATES = {32000, 44100, 48000}       # rates MPEG-1 Layer III accepts
-CHUNK_FRAMES = 1024
-POLL_S = 0.1                            # queue timeout, also Ctrl+C latency
-GAP_TOLERANCE_S = 0.25                  # idle time before silence is padded
-BYTES_PER_FRAME = 4                     # stereo int16
+from audiorec.capture import (CaptureLoop, DeviceError, LoopbackSource, Status,
+                              list_loopback_devices, pick_device)
+from audiorec.mp3sink import MP3_RATES, Mp3StreamSink
 
 
-def list_loopback_devices(p: pyaudio.PyAudio) -> None:
-    for dev in p.get_loopback_device_info_generator():
+def print_devices(p: pyaudio.PyAudio) -> None:
+    for dev in list_loopback_devices(p):
         print(f"[{dev['index']:>3}] {dev['name']}  "
               f"({int(dev['defaultSampleRate'])} Hz, {dev['maxInputChannels']} ch)")
-
-
-def pick_device(p: pyaudio.PyAudio, index: int | None) -> dict:
-    if index is not None:
-        dev = p.get_device_info_by_index(index)
-        if not dev.get("isLoopbackDevice"):
-            sys.exit(f"Device {index} is not a WASAPI loopback device. Run with --list.")
-        return dev
-    try:
-        return p.get_default_wasapi_loopback()
-    except (OSError, LookupError):
-        sys.exit("No default WASAPI loopback device found. Run with --list.")
-
-
-def to_stereo_int16(raw: bytes, channels: int) -> bytes:
-    """MP3 is stereo at most: duplicate mono, keep FL/FR from surround layouts."""
-    if channels == 2:
-        return raw
-    x = np.frombuffer(raw, dtype=np.int16).reshape(-1, channels)
-    if channels == 1:
-        return np.repeat(x, 2, axis=1).tobytes()
-    return np.ascontiguousarray(x[:, :2]).tobytes()
-
-
-def peak_dbfs(pcm: bytes) -> float:
-    x = np.frombuffer(pcm, dtype=np.int16)
-    if x.size == 0:
-        return float("-inf")
-    peak = int(np.abs(x.astype(np.int32)).max())
-    return 20 * np.log10(max(peak, 1) / 32768)
-
-
-def build_encoder(rate: int) -> lameenc.Encoder:
-    enc = lameenc.Encoder()
-    enc.set_bit_rate(BITRATE_KBPS)
-    enc.set_in_sample_rate(rate)
-    enc.set_channels(2)
-    enc.set_quality(2)                  # 2 = high quality, 7 = fastest
-    return enc
 
 
 def record(p: pyaudio.PyAudio, dev: dict, outdir: Path) -> Path:
@@ -90,72 +46,38 @@ def record(p: pyaudio.PyAudio, dev: dict, outdir: Path) -> Path:
 
     outdir.mkdir(parents=True, exist_ok=True)
     path = outdir / f"desktop_audio_{datetime.now():%Y%m%d_%H%M%S}.mp3"
-    enc = build_encoder(rate)
-    q: queue.Queue[bytes] = queue.Queue()
-
-    def callback(in_data, frame_count, time_info, status):
-        q.put(in_data)
-        return (None, pyaudio.paContinue)
-
-    stream = p.open(
-        format=pyaudio.paInt16,
-        channels=channels,
-        rate=rate,
-        input=True,
-        input_device_index=dev["index"],
-        frames_per_buffer=CHUNK_FRAMES,
-        stream_callback=callback,
-    )
+    source = LoopbackSource(p, dev)
 
     print(f"Recording '{dev['name']}' @ {rate} Hz, {channels} ch -> {path}")
     print("Press Ctrl+C to stop.\n")
 
-    start = last_data = last_status = time.perf_counter()
-    frames_written = 0
-    peak = float("-inf")
-
     with path.open("wb") as f:
+        sink = Mp3StreamSink(f, rate)
+
+        def on_status(st: Status) -> None:
+            secs = int(st.frames_written / rate)
+            hh, mm, ss = secs // 3600, secs % 3600 // 60, secs % 60
+            level = f"{st.peak_dbfs:6.1f} dBFS" if np.isfinite(st.peak_dbfs) else "  silent  "
+            print(f"\r● REC {hh:02d}:{mm:02d}:{ss:02d} | {f.tell() / 1e6:7.2f} MB | peak {level}",
+                  end="", flush=True)
+
+        loop = CaptureLoop(source, sink, rate, channels, on_status=on_status,
+                           status_interval_s=1.0)
+        result = []
+        worker = threading.Thread(target=lambda: result.append(loop.run()))
+        worker.start()
         try:
-            while True:
-                try:
-                    pcm = to_stereo_int16(q.get(timeout=POLL_S), channels)
-                    last_data = time.perf_counter()
-                    peak = max(peak, peak_dbfs(pcm))
-                except queue.Empty:
-                    # WASAPI loopback delivers nothing while the desktop is
-                    # silent. Pad zeros so the file stays aligned to wall clock.
-                    now = time.perf_counter()
-                    if now - last_data < GAP_TOLERANCE_S:
-                        continue
-                    behind = int((now - start) * rate) - frames_written
-                    if behind <= 0:
-                        continue
-                    pcm = bytes(behind * BYTES_PER_FRAME)
-
-                f.write(enc.encode(pcm))
-                frames_written += len(pcm) // BYTES_PER_FRAME
-
-                now = time.perf_counter()
-                if now - last_status >= 1.0:
-                    secs = int(frames_written / rate)
-                    hh, mm, ss = secs // 3600, secs % 3600 // 60, secs % 60
-                    size_mb = f.tell() / 1e6
-                    level = f"{peak:6.1f} dBFS" if np.isfinite(peak) else "  silent  "
-                    print(f"\r● REC {hh:02d}:{mm:02d}:{ss:02d} | {size_mb:7.2f} MB | peak {level}",
-                          end="", flush=True)
-                    peak, last_status = float("-inf"), now
+            while worker.is_alive():
+                worker.join(0.2)        # short joins keep Ctrl+C responsive
         except KeyboardInterrupt:
-            pass
-        finally:
-            stream.stop_stream()
-            stream.close()
-            while not q.empty():        # flush what the callback queued last
-                pcm = to_stereo_int16(q.get_nowait(), channels)
-                f.write(enc.encode(pcm))
-                frames_written += len(pcm) // BYTES_PER_FRAME
-            f.write(enc.flush())
+            loop.stop()                 # run() drains the queue and closes the stream
+            worker.join()
+        sink.finish()
 
-    secs = frames_written / rate
+    if result and result[0].kind != "user":
+        print(f"\n\nRecording ended early ({result[0].kind}): {result[0].message}",
+              file=sys.stderr)
+    secs = loop.frames_written / rate
     print(f"\n\nSaved {path} ({secs:.1f} s, {path.stat().st_size / 1e6:.2f} MB)")
     return path
 
@@ -169,9 +91,13 @@ def main() -> None:
 
     with pyaudio.PyAudio() as p:
         if args.list:
-            list_loopback_devices(p)
+            print_devices(p)
             return
-        record(p, pick_device(p, args.device), args.outdir)
+        try:
+            dev = pick_device(p, args.device)
+        except DeviceError as e:
+            sys.exit(f"{e} Run with --list.")
+        record(p, dev, args.outdir)
 
 
 if __name__ == "__main__":

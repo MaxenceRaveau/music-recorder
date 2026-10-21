@@ -1,8 +1,14 @@
 """
-Pure, Qt-free helpers for WASAPI loopback capture: device selection, PCM
-conversion, level metering and a pausable wall clock.
+Qt-free WASAPI loopback capture: device selection, PCM conversion, level
+metering, a pausable wall clock and a sink-agnostic capture loop.
 """
 from __future__ import annotations
+
+import queue
+import threading
+import time
+from dataclasses import dataclass
+from typing import Callable, Literal, Protocol
 
 import numpy as np
 import pyaudiowpatch as pyaudio
@@ -23,7 +29,10 @@ def list_loopback_devices(p: pyaudio.PyAudio) -> list[dict]:
 
 def pick_device(p: pyaudio.PyAudio, index: int | None) -> dict:
     if index is not None:
-        dev = p.get_device_info_by_index(index)
+        try:
+            dev = p.get_device_info_by_index(index)
+        except OSError:                 # PortAudio raises this for unknown indices
+            raise DeviceError(f"Device {index} does not exist.") from None
         if not dev.get("isLoopbackDevice"):
             raise DeviceError(f"Device {index} is not a WASAPI loopback device.")
         return dev
@@ -81,3 +90,178 @@ class PauseClock:
     def frames_due(self, now: float) -> int:
         t = self._paused_at if self._paused_at is not None else now
         return int((t - self._start - self._paused_total) * self._rate)
+
+
+class DeviceLost(Exception):
+    """The capture stream stopped delivering (device unplugged or disabled)."""
+
+
+class Sink(Protocol):
+    def write(self, pcm: bytes) -> None: ...
+
+
+class ChunkSource(Protocol):
+    def get(self, timeout: float) -> bytes:
+        """Next raw chunk; raises queue.Empty on timeout, DeviceLost if gone."""
+
+    def close(self) -> None: ...
+
+
+class LoopbackSource:
+    """Opens a loopback stream; the PortAudio callback feeds a queue."""
+
+    def __init__(self, p: pyaudio.PyAudio, dev: dict) -> None:
+        self.rate = int(dev["defaultSampleRate"])
+        self.channels = int(dev["maxInputChannels"])
+        self.name = dev["name"]
+        self._q: queue.Queue[bytes] = queue.Queue()
+
+        def callback(in_data, frame_count, time_info, status):
+            self._q.put(in_data)
+            return (None, pyaudio.paContinue)
+
+        self._stream = p.open(
+            format=pyaudio.paInt16,
+            channels=self.channels,
+            rate=self.rate,
+            input=True,
+            input_device_index=dev["index"],
+            frames_per_buffer=CHUNK_FRAMES,
+            stream_callback=callback,
+        )
+
+    def get(self, timeout: float) -> bytes:
+        try:
+            return self._q.get(timeout=timeout)
+        except queue.Empty:
+            if not self._stream.is_active():
+                raise DeviceLost("Audio device stopped delivering data.") from None
+            raise
+
+    def close(self) -> None:
+        self._stream.stop_stream()
+        self._stream.close()
+
+
+@dataclass
+class Status:
+    frames_written: int
+    peak_dbfs: float                    # peak since the previous status
+    paused: bool
+
+
+@dataclass
+class StopReason:
+    kind: Literal["user", "device_lost", "write_error"]
+    message: str = ""
+
+
+class _SinkFailed(Exception):
+    pass
+
+
+class CaptureLoop:
+    """Pulls chunks from a source into a sink, keeping the audio aligned to the
+    (pause-adjusted) wall clock. pause/resume/stop are thread-safe requests that
+    run() applies between polls."""
+
+    def __init__(
+        self,
+        source: ChunkSource,
+        sink: Sink,
+        rate: int,
+        channels: int,
+        on_status: Callable[[Status], None] | None = None,
+        on_pcm: Callable[[bytes], None] | None = None,
+        status_interval_s: float = 0.05,
+        clock: Callable[[], float] = time.perf_counter,
+    ) -> None:
+        self._source, self._sink = source, sink
+        self._rate, self._channels = rate, channels
+        self._on_status, self._on_pcm = on_status, on_pcm
+        self._status_interval_s = status_interval_s
+        self._clock = clock
+        self._stop = threading.Event()
+        self._pause_req = threading.Event()
+        self._resume_req = threading.Event()
+        self._frames = 0
+        self._peak = float("-inf")
+
+    @property
+    def frames_written(self) -> int:
+        return self._frames
+
+    def pause(self) -> None:
+        self._pause_req.set()
+
+    def resume(self) -> None:
+        self._resume_req.set()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _write(self, pcm: bytes) -> None:
+        try:
+            self._sink.write(pcm)
+        except OSError as e:
+            raise _SinkFailed(str(e)) from e
+        self._frames += len(pcm) // BYTES_PER_FRAME
+        self._peak = max(self._peak, peak_dbfs(pcm))
+        if self._on_pcm:
+            self._on_pcm(pcm)
+
+    def _drain(self) -> None:
+        """Write whatever the source holds right now."""
+        while True:
+            try:
+                raw = self._source.get(0)
+            except queue.Empty:
+                return
+            self._write(to_stereo_int16(raw, self._channels))
+
+    def run(self) -> StopReason:
+        clock = PauseClock(self._rate)
+        now = last_data = last_status = self._clock()
+        clock.start(now)
+        try:
+            while not self._stop.is_set():
+                if self._pause_req.is_set():
+                    self._pause_req.clear()
+                    if not clock.paused:
+                        self._drain()           # keep audio captured before the pause
+                        clock.pause(self._clock())
+                if self._resume_req.is_set():
+                    self._resume_req.clear()
+                    now = self._clock()
+                    clock.resume(now)
+                    last_data = now
+
+                try:
+                    raw = self._source.get(POLL_S)
+                except queue.Empty:
+                    now = self._clock()
+                    # WASAPI loopback delivers nothing while the desktop is
+                    # silent. Pad zeros so the file stays aligned to wall clock.
+                    if not clock.paused and now - last_data >= GAP_TOLERANCE_S:
+                        behind = clock.frames_due(now) - self._frames
+                        if behind > 0:
+                            self._write(bytes(behind * BYTES_PER_FRAME))
+                else:
+                    if not clock.paused:
+                        last_data = self._clock()
+                        self._write(to_stereo_int16(raw, self._channels))
+
+                now = self._clock()
+                if self._on_status and now - last_status >= self._status_interval_s:
+                    self._on_status(Status(self._frames, self._peak, clock.paused))
+                    self._peak, last_status = float("-inf"), now
+
+            if not clock.paused:
+                self._drain()                   # flush what the callback queued last
+            return StopReason("user")
+        except DeviceLost as e:
+            return StopReason("device_lost", str(e))
+        except _SinkFailed as e:
+            return StopReason("write_error", str(e))
+        finally:
+            self._source.close()
