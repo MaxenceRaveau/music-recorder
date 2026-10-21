@@ -35,7 +35,8 @@ class Session:
         self.fields: dict[str, str] = dict(fields or {})
         self._pcm_path = folder / PCM_NAME
         self._file = None
-        self._lock = threading.Lock()  # write() runs on the worker, update_fields() on the GUI thread
+        self._lock = threading.Lock()       # guards the pcm handle and self.fields; never held during metadata I/O
+        self._meta_lock = threading.Lock()  # serialises session.json rewrites
 
     @classmethod
     def create(cls, root: Path, rate: int, device_name: str,
@@ -53,7 +54,7 @@ class Session:
                 n += 1
         (folder / PCM_NAME).touch()
         s = cls(folder, rate, device_name, now)
-        s._write_meta()
+        s._write_meta(s.fields)
         return s
 
     @classmethod
@@ -83,13 +84,18 @@ class Session:
             return 0
 
     def update_fields(self, **fields: str) -> None:
-        with self._lock:
-            self.fields.update(fields)
-            self._write_meta()
+        # Meta lock outermost so snapshots reach disk in order; the audio lock
+        # is held only for the in-memory merge, so a slow disk (antivirus,
+        # OneDrive) can't stall the capture worker's write().
+        with self._meta_lock:
+            with self._lock:
+                self.fields.update(fields)
+                snapshot = dict(self.fields)
+            self._write_meta(snapshot)
 
-    def _write_meta(self) -> None:
+    def _write_meta(self, fields: dict[str, str]) -> None:
         meta = {"rate": self.rate, "device_name": self.device_name,
-                "started": self.started.isoformat(), "fields": self.fields}
+                "started": self.started.isoformat(), "fields": fields}
         tmp = self.folder / (META_NAME + ".tmp")
         tmp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
         os.replace(tmp, self.folder / META_NAME)

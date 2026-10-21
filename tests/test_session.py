@@ -81,3 +81,28 @@ def test_delete_removes_folder(tmp_path):
     s.write(stereo([1]))
     s.delete()
     assert not s.folder.exists()
+
+
+def test_write_not_blocked_by_slow_metadata_write(tmp_path, monkeypatch):
+    import threading
+
+    s = Session.create(tmp_path, 48000, "d")
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_meta(fields):
+        entered.set()
+        release.wait(5)
+
+    monkeypatch.setattr(s, "_write_meta", slow_meta)
+    t = threading.Thread(target=s.update_fields, kwargs={"title": "x"})
+    t.start()
+    assert entered.wait(5)
+    w = threading.Thread(target=s.write, args=(stereo([1, 2, 3]),))
+    w.start()
+    w.join(2)
+    finished = not w.is_alive()
+    release.set()
+    t.join(5)
+    s.close()
+    assert finished, "write() blocked behind a metadata write"
+    assert s.frames == 3 and s.fields["title"] == "x"
