@@ -18,7 +18,7 @@ from audiorec.session import Session
 
 class RecorderWorker(QObject):
     peaks = Signal(object)              # float32 (n, 2) min/max rows
-    status = Signal(int, float)         # frames_written, peak dBFS
+    status = Signal(object, float)      # frames_written (object: int32 overflows past ~12 h at 48 kHz), peak dBFS
     finished = Signal(object)           # StopReason, after the last peaks
 
     def __init__(self, source_factory: Callable[[], ChunkSource], session: Session,

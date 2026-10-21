@@ -75,3 +75,12 @@ def test_stop_before_run_still_takes_effect(qtbot, tmp_path):
     worker.finished.connect(reasons.append)
     worker.run()
     assert reasons == [StopReason("user")]
+
+
+def test_status_signal_carries_frames_beyond_int32(qtbot, tmp_path):
+    session = Session.create(tmp_path, RATE, "fake")
+    worker = RecorderWorker(lambda: None, session, RATE, 2)
+    got = []
+    worker.status.connect(lambda frames, db: got.append((frames, db)))
+    worker.status.emit(3_000_000_000, -12.5)
+    assert got == [(3_000_000_000, -12.5)]
