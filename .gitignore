@@ -1,0 +1,5 @@
+__pycache__/
+recordings/
+.superpowers/
+*.part
+.pytest_cache/
