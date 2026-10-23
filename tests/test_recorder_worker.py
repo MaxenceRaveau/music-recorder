@@ -29,11 +29,15 @@ def start(qtbot, tmp_path, make_script, factory=None):
     thread = QThread()
     worker.moveToThread(thread)
     thread.started.connect(worker.run)
-    worker.finished.connect(thread.quit)
     worker.finished.connect(reasons.append)
     with qtbot.waitSignal(worker.finished, timeout=5000):
         thread.start()
-    thread.wait(5000)
+    # Quit directly, as MainWindow does. A finished -> thread.quit connection is
+    # queued to this thread, and waitSignal's slot runs on the worker thread, so
+    # the loop can exit before that quit is delivered; wait() then times out and
+    # dropping a running QThread is a qFatal (0xC0000409, exit 127 in bash).
+    thread.quit()
+    assert thread.wait(5000), "capture thread still running: dropping it would qFatal"
     return session, blocks, reasons[0]
 
 
