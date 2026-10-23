@@ -133,3 +133,12 @@ def test_frames_view_empty_file(tmp_path):
     s = Session.create(tmp_path, 48000, "d")
     v = s.frames_view(0, 100)
     assert v.shape == (0, 2) and v.dtype == np.int16
+
+
+def test_find_leftovers_skips_non_object_session_json(tmp_path):
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    (bad / "session.json").write_text("[]")
+    (bad / "audio.pcm").write_bytes(b"\0" * 8)
+    assert find_leftovers(tmp_path) == []
+    assert (bad / "audio.pcm").exists()

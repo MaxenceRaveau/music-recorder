@@ -7,6 +7,7 @@ playback ends arrive from the PortAudio thread through a Qt signal.
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -14,7 +15,7 @@ import pyaudiowpatch as pyaudio
 from PySide6.QtCore import QObject, QRunnable, Qt, QThread, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel,
-                               QMainWindow, QMessageBox, QProgressBar, QSizePolicy, QStyle,
+                               QMainWindow, QMessageBox, QProgressBar, QProgressDialog, QSizePolicy, QStyle,
                                QToolButton, QVBoxLayout, QWidget)
 
 from audiorec.capture import ChunkSource, LoopbackSource, StopReason, list_loopback_devices
@@ -26,7 +27,8 @@ from audiorec.gui.state import Event, State, controls_for, next_state
 from audiorec.gui.waveform import WaveformView
 from audiorec.mp3sink import MP3_RATES, mp3_rate_message
 from audiorec.playback import Player
-from audiorec.session import Session
+from audiorec.peaks import peaks_from_file
+from audiorec.session import PCM_NAME, Session, find_leftovers
 
 FORMAT_LABELS = (("mp3", "MP3 320 kbps"), ("flac", "FLAC"), ("wav", "WAV"))
 STOP_MESSAGES = {
@@ -158,6 +160,10 @@ class MainWindow(QMainWindow):
         self._play_from = 0
         self._export_task: _ExportTask | None = None
         self._export_params: tuple[Path, str] | None = None
+        self._pending_leftovers: list[Session] = []
+        self._leftovers_checked = False
+        self._recovery_task: _ExportTask | None = None     # peak rebuild of a recovered session
+        self._recovery_dialog: QProgressDialog | None = None
 
         self._player_bridge = _PlayerBridge(self)
         self._player_bridge.finished.connect(self._on_play_finished)
@@ -336,7 +342,7 @@ class MainWindow(QMainWindow):
             self.main_button.setProperty("icon_name", c.main_icon)
         tip = "Resume" if self.state is State.PAUSED else MAIN_TIPS[c.main_icon]
         self.main_button.setToolTip(tip)
-        no_device = self.state is State.READY and not self._devices
+        no_device = self.state is State.READY and (not self._devices or self._recovery_task is not None)
         self.main_button.setEnabled(c.main_enabled and not self._stopping and not no_device)
         self.stop_button.setEnabled(c.stop_enabled and not self._stopping)
         self.device_combo.setEnabled(c.source_enabled)
@@ -600,6 +606,7 @@ class MainWindow(QMainWindow):
         self._reset_to_ready()
         self.statusBar().showMessage(f"Saved {path}")
         self.export_finished.emit(True)
+        self._offer_pending_leftovers()
 
     def _on_export_failed(self, message: str) -> None:
         self._end_export()
@@ -618,6 +625,7 @@ class MainWindow(QMainWindow):
         self._fire(Event.DISCARDED)
         self._reset_to_ready()
         self.statusBar().showMessage("Recording discarded", 5000)
+        self._offer_pending_leftovers()
 
     def _delete_session(self) -> None:
         # Only in STOPPED/SAVING, so the worker is done; stop everything else
@@ -635,8 +643,99 @@ class MainWindow(QMainWindow):
         self._update_times()
         self._update_format_options()
 
+    # ---- crash recovery ---------------------------------------------------
+    def check_leftovers(self) -> None:
+        """Offer sessions left by a crash. Scans the disk once, at startup only: a
+        session created later has an empty pcm file that find_leftovers would delete."""
+        if self._leftovers_checked or self.state is not State.READY or self.session is not None:
+            return
+        self._leftovers_checked = True
+        self._pending_leftovers = find_leftovers(self._root)
+        self._offer_pending_leftovers()
+
+    def _offer_pending_leftovers(self) -> None:
+        """Ask about the remaining leftovers, newest first, until one is opened."""
+        while self._pending_leftovers:
+            if (self.state is not State.READY or self.session is not None
+                    or self._recovery_task is not None):
+                return
+            s = self._pending_leftovers.pop(0)
+            answer = self._ask_recovery(s.started, s.frames / s.rate)
+            if answer == "open":
+                self._open_leftover(s)
+                return
+            if answer == "delete":
+                if self._confirm("Delete recording", "Delete this recording? This cannot be undone."):
+                    s.delete()
+                else:
+                    self._pending_leftovers.insert(0, s)    # not confirmed: ask again
+            # "later": leave it on disk and move on to the next one
+
+    def _open_leftover(self, session: Session) -> None:
+        pcm = session.folder / PCM_NAME
+        task = _ExportTask(lambda progress: peaks_from_file(pcm, session.rate, progress))
+        dialog = QProgressDialog("Loading the recording…", "", 0, 100, self)
+        dialog.setCancelButton(None)
+        dialog.setWindowModality(Qt.WindowModal)
+        dialog.setMinimumDuration(1000)         # only appears for slow rebuilds
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        task.signals.progress.connect(lambda f: dialog.setValue(round(f * 100)))
+        task.signals.done.connect(lambda peaks: self._on_recovery_done(session, peaks))
+        task.signals.failed.connect(lambda msg: self._on_recovery_failed(msg))
+        self._recovery_task, self._recovery_dialog = task, dialog
+        self._apply_controls()
+        QThreadPool.globalInstance().start(task)
+
+    def _end_recovery(self) -> None:
+        if self._recovery_dialog is not None:
+            self._recovery_dialog.close()
+            self._recovery_dialog.deleteLater()
+        self._recovery_task = self._recovery_dialog = None
+
+    def _on_recovery_failed(self, message: str) -> None:
+        self._end_recovery()
+        self._apply_controls()
+        self._error("Cannot open recording", message)   # the session stays on disk
+        self._offer_pending_leftovers()
+
+    def _on_recovery_done(self, session: Session, peaks) -> None:
+        self._end_recovery()
+        self._enter_recovered_session(session, peaks)
+
+    def _enter_recovered_session(self, session: Session, peaks) -> None:
+        self.session = session
+        self.waveform.clear()
+        self.waveform.set_rate(session.rate)
+        self.waveform.append_peaks(peaks)
+        self.waveform.set_editable(True)
+        f = session.fields
+        for name in ("title", "artist", "album", "year", "genre", "track", "cover"):
+            getattr(self, f"{name}_edit").setText(f.get(name, ""))
+        if f.get("folder"):
+            self.folder_edit.setText(f["folder"])
+        fmt_idx = self.format_combo.findData(f.get("format"))
+        if fmt_idx >= 0:
+            self.format_combo.setCurrentIndex(fmt_idx)
+        self.save_panel.start_naming(session.started, self._format())
+        if f.get("filename"):
+            self.filename_edit.setText(f["filename"])
+        # The state machine has no READY -> STOPPED edge, and it should not: a
+        # recording only ever reaches STOPPED by being captured here. A recovered
+        # session arrives already captured, so we set the state directly.
+        self.state = State.STOPPED
+        self._release_player()
+        self._play_from = self._selection()[0]
+        self._update_times()
+        self._update_format_options()       # applies the controls too
+
     # ---- closing ----------------------------------------------------------
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._recovery_task is not None:     # still rebuilding peaks: drop the result
+            for sig in (self._recovery_task.signals.done, self._recovery_task.signals.failed):
+                sig.disconnect()
+            QThreadPool.globalInstance().waitForDone()
+            self._end_recovery()
         if self.state is not State.READY:
             if not self._confirm("Quit Audio Recorder", CLOSE_MESSAGES[self.state]):
                 event.ignore()
@@ -680,6 +779,20 @@ class MainWindow(QMainWindow):
         box.addButton(QMessageBox.Cancel)
         box.exec()
         return box.clickedButton() is overwrite
+
+    def _ask_recovery(self, started: datetime, length_s: float) -> str:
+        """Returns "open", "delete" or "later"."""
+        box = QMessageBox(QMessageBox.Question, "Unsaved recording",
+                          f"An unsaved recording from {started:%Y-%m-%d %H:%M} "
+                          f"({int(length_s) // 60:02d}:{int(length_s) % 60:02d}) was found.",
+                          parent=self)
+        open_btn = box.addButton("Open", QMessageBox.AcceptRole)
+        delete_btn = box.addButton("Delete", QMessageBox.DestructiveRole)
+        later_btn = box.addButton("Later", QMessageBox.RejectRole)
+        box.setEscapeButton(later_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        return "open" if clicked is open_btn else "delete" if clicked is delete_btn else "later"
 
     def _pick_folder(self, start: str) -> str:
         return QFileDialog.getExistingDirectory(self, "Save to", start)

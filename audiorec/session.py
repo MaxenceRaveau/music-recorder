@@ -149,7 +149,7 @@ def find_leftovers(root: Path) -> list[Session]:
             continue
         try:
             s = Session.open(folder)
-        except (OSError, ValueError, KeyError):
+        except (OSError, ValueError, KeyError, TypeError):
             continue
         if s.frames == 0:
             s.delete()
