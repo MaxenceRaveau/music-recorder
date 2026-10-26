@@ -149,6 +149,27 @@ def test_filename_autofill_until_user_edits(qtbot, make_window):
     assert win.filename_edit.text() == "mine.flac"
 
 
+def test_title_and_artist_editable_while_recording(qtbot, make_window):
+    win = make_window(last_format="flac")
+    record(qtbot, win)
+    assert win.save_panel.isEnabled()
+    assert win.title_edit.isEnabled() and win.artist_edit.isEnabled()
+    for w in (win.filename_edit, win.folder_edit, win.browse_button, win.details_toggle,
+              win.album_edit, win.discard_button, win.save_button):
+        assert not w.isEnabled()
+    qtbot.keyClicks(win.artist_edit, "Band")
+    qtbot.keyClicks(win.title_edit, "Song")
+    qtbot.waitUntil(lambda: win.session.fields.get("title") == "Song", timeout=2000)
+    win.main_button.click()
+    assert win.state is State.PAUSED and win.title_edit.isEnabled()
+    assert not win.save_button.isEnabled()
+    win.main_button.click()
+    stop(qtbot, win)
+    assert win.filename_edit.text() == "Band - Song.flac"
+    assert win.filename_edit.isEnabled() and win.album_edit.isEnabled()
+    assert win.save_button.isEnabled()
+
+
 def test_format_change_swaps_extension(qtbot, make_window):
     win = make_window(last_format="flac")
     record(qtbot, win)

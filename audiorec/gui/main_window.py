@@ -352,7 +352,9 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(c.stop_enabled and not self._stopping)
         self.device_combo.setEnabled(c.source_enabled)
         self.format_combo.setEnabled(c.format_enabled)
-        self.save_panel.setEnabled(c.save_panel_enabled)
+        capturing = self.state in (State.RECORDING, State.PAUSED)
+        self.save_panel.setEnabled(c.save_panel_enabled or capturing)
+        self.save_panel.set_names_only(capturing)
         self.save_button.setEnabled(c.save_enabled)
         self.mp3_warning.setVisible(self.state is State.READY and self._format() == "mp3"
                                     and bool(self.mp3_warning.text()))
@@ -553,7 +555,7 @@ class MainWindow(QMainWindow):
         return {**self.save_panel.fields(), "format": self._format()}
 
     def _schedule_fields_save(self) -> None:
-        if self.session is not None and self.state is State.STOPPED:
+        if self.session is not None and self.state in (State.RECORDING, State.PAUSED, State.STOPPED):
             self._fields_timer.start()
 
     def _save_fields(self) -> None:

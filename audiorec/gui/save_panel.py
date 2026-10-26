@@ -83,6 +83,12 @@ class SavePanel(QGroupBox):
         for edit in self._edits.values():
             edit.textChanged.connect(self.edited)
 
+    def set_names_only(self, on: bool) -> None:
+        """While recording: only Title and Artist can be typed into."""
+        for w in (self.filename_edit, self.folder_edit, self.browse_button, self.details_toggle,
+                  self.details, self.discard_button, self.save_button):
+            w.setEnabled(not on)
+
     def _on_details_toggled(self, shown: bool) -> None:
         self.details.setVisible(shown)
         self.details_toggle.setArrowType(Qt.DownArrow if shown else Qt.RightArrow)
