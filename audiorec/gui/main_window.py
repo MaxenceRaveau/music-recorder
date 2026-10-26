@@ -26,6 +26,7 @@ from audiorec.gui.settings import AppSettings
 from audiorec.gui.state import Event, State, controls_for, next_state
 from audiorec.gui.waveform import WaveformView
 from audiorec.mp3sink import MP3_RATES, mp3_rate_message
+from audiorec.naming import build_filename, is_valid_filename, with_extension
 from audiorec.playback import Player
 from audiorec.peaks import peaks_from_file
 from audiorec.session import PCM_NAME, Session, find_leftovers
@@ -43,6 +44,7 @@ CLOSE_MESSAGES = {
     State.SAVING: "Saving is in progress. Quit once it finishes?",
 }
 CLOSE_MESSAGES[State.PAUSED] = CLOSE_MESSAGES[State.RECORDING]
+BAD_NAME_MESSAGE = r"""A file name can't be ".." or contain \ / : * ? " < > |"""
 METER_FLOOR_DB = -60
 MAIN_TIPS = {"record": "Record", "pause": "Pause", "play": "Play selection"}
 
@@ -112,6 +114,7 @@ class _ExportTask(QRunnable):
         self.setAutoDelete(False)       # the window owns it; avoids a dangling wrapper
         self.signals = _ExportSignals()
         self._job = job
+        self.succeeded = False      # read after waitForDone(), when signals are disconnected
 
     def run(self) -> None:
         try:
@@ -119,6 +122,7 @@ class _ExportTask(QRunnable):
         except Exception as e:  # noqa: BLE001 - anything uncaught would leave SAVING forever
             self.signals.failed.emit(str(e) or type(e).__name__)
             return
+        self.succeeded = True
         self.signals.done.emit(path)
 
 
@@ -160,6 +164,7 @@ class MainWindow(QMainWindow):
         self._play_from = 0
         self._export_task: _ExportTask | None = None
         self._export_params: tuple[Path, str] | None = None
+        self._saving_selection = (0, 0)
         self._pending_leftovers: list[Session] = []
         self._leftovers_checked = False
         self._recovery_task: _ExportTask | None = None     # peak rebuild of a recovered session
@@ -419,6 +424,9 @@ class MainWindow(QMainWindow):
     def _on_capture_finished(self, reason: StopReason) -> None:
         self._finish_thread()
         self._stopping = False
+        if reason.kind != "user" and self.session.frames == 0:
+            self._abort_failed_start(reason)
+            return
         self._fire(Event.STOP if reason.kind == "user" else Event.CAPTURE_ENDED)
         self.waveform.set_editable(True)
         self._reset_meter()
@@ -432,6 +440,18 @@ class MainWindow(QMainWindow):
             if reason.message:
                 text += f"\n\n{reason.message}"
             self._warn("Recording stopped", text)
+
+    def _abort_failed_start(self, reason: StopReason) -> None:
+        """The device never delivered audio (it failed to open): drop the empty
+        session, which holds nothing worth recovering, and go back to READY."""
+        self._delete_session()
+        # The state machine has no RECORDING -> READY edge, and it should not: a
+        # capture that recorded anything always ends in STOPPED. With nothing
+        # recorded there is nothing to stop on, so we set the state directly.
+        self.state = State.READY
+        self._reset_to_ready()
+        self._error("Could not start recording",
+                    reason.message or STOP_MESSAGES.get(reason.kind, STOP_MESSAGES["device_lost"]))
 
     # ---- selection and playback ------------------------------------------
     def _update_times(self) -> None:
@@ -557,16 +577,22 @@ class MainWindow(QMainWindow):
     def _on_save(self) -> None:
         if self.state is not State.STOPPED or self.session is None:
             return
-        name = self.filename_edit.text().strip()
-        if not name:
-            self._error("Cannot save", "Enter a file name.")
+        fmt = self._format()
+        name = self.filename_edit.text().strip() or build_filename(
+            self.artist_edit.text(), self.title_edit.text(), fmt, self.session.started)
+        if not is_valid_filename(name):
+            self._error("Cannot save", BAD_NAME_MESSAGE)
             return
+        name = with_extension(name, fmt)
+        self.filename_edit.setText(name)        # show what is actually written
         folder = Path(self.folder_edit.text().strip() or self._settings.last_folder)
         dest = folder / name
         if dest.exists() and not self._ask_overwrite(dest):
             return
-        session, fmt, tags = self.session, self._format(), self.save_panel.tags()
+        session, tags = self.session, self.save_panel.tags()
         start, end = self._selection()
+        self._saving_selection = self.waveform.selection()
+        self.waveform.set_editable(False)       # no marker drags while the take is exported
         self._stop_playback()
         self._fields_timer.stop()
         self._save_fields()
@@ -598,19 +624,27 @@ class MainWindow(QMainWindow):
     def _on_export_done(self, path: Path) -> None:
         self._end_export()
         folder, fmt = self._export_params
-        self._settings.last_folder = folder
-        self._settings.last_format = fmt
-        self._settings.last_device_name = self.session.device_name
-        self._delete_session()
+        self._remember_and_delete(folder, fmt)
         self._fire(Event.SAVED)
         self._reset_to_ready()
         self.statusBar().showMessage(f"Saved {path}")
         self.export_finished.emit(True)
         self._offer_pending_leftovers()
 
+    def _remember_and_delete(self, folder: Path, fmt: str) -> None:
+        """The export is on disk: remember its settings and drop the session."""
+        self._settings.last_folder = folder
+        self._settings.last_format = fmt
+        self._settings.last_device_name = self.session.device_name
+        self._delete_session()
+
     def _on_export_failed(self, message: str) -> None:
         self._end_export()
         self._fire(Event.EXPORT_FAILED)
+        # set_editable(True) selects everything, so put the user's trim back.
+        self.waveform.set_editable(True)
+        self.waveform.set_selection(*self._saving_selection)
+        self._player_dirty = True
         self._update_times()
         self.statusBar().clearMessage()
         self._error("Save failed", message)
@@ -753,7 +787,10 @@ class MainWindow(QMainWindow):
             for sig in (self._export_task.signals.done, self._export_task.signals.failed):
                 sig.disconnect()
             QThreadPool.globalInstance().waitForDone()
+            succeeded = self._export_task.succeeded
             self._end_export()
+            if succeeded:                       # saved: nothing left to recover
+                self._remember_and_delete(*self._export_params)
         self._release_player()
         if self._fields_timer.isActive():
             self._fields_timer.stop()

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from audiorec.naming import build_filename, sanitize, with_extension
+import pytest
+
+from audiorec.naming import build_filename, is_valid_filename, sanitize, with_extension
 
 T = datetime(2026, 1, 1)
 
@@ -73,3 +75,14 @@ def test_with_extension_swaps_known_ext():
 
 def test_with_extension_known_ext_case_insensitive():
     assert with_extension("a - b.MP3", "wav") == "a - b.wav"
+
+
+@pytest.mark.parametrize("name", ["One More Time", "Song.mp3", "a..b.flac", "Été"])
+def test_is_valid_filename_accepts_plain_names(name):
+    assert is_valid_filename(name)
+
+
+@pytest.mark.parametrize("name", ["", "AC/DC - TNT", "What?", r"..\x", r"a\b", r"C:\x.mp3",
+                                  "..", ".", 'say "hi"', "a|b", "a*b", "<x>"])
+def test_is_valid_filename_rejects_paths_and_illegal_chars(name):
+    assert not is_valid_filename(name)

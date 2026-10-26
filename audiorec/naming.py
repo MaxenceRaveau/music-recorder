@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from pathlib import PureWindowsPath
 
 FORMATS = ("mp3", "flac", "wav")
 EXT = {"mp3": ".mp3", "flac": ".flac", "wav": ".wav"}
@@ -28,6 +29,13 @@ def sanitize(name: str) -> str:
     if stem.split(".", 1)[0].upper() in _RESERVED:
         stem = "_" + stem
     return stem
+
+
+def is_valid_filename(name: str) -> bool:
+    """True if ``name`` is a bare Windows file name: no folder part, no "..",
+    no characters Windows forbids."""
+    return (bool(name) and name not in (".", "..") and not _ILLEGAL.search(name)
+            and PureWindowsPath(name).name == name)
 
 
 def build_filename(artist: str, title: str, fmt: str, started: datetime) -> str:

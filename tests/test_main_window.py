@@ -9,9 +9,9 @@ import wave
 import numpy as np
 
 import pytest
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, Qt
 
-from audiorec.gui.main_window import MainWindow
+from audiorec.gui.main_window import BAD_NAME_MESSAGE, MainWindow
 from audiorec.gui.settings import AppSettings
 from audiorec.gui.state import State
 from audiorec.mp3sink import mp3_rate_message
@@ -338,3 +338,139 @@ def test_player_load_is_fast_on_long_session(qtbot, make_window):
     print(f"\n_ensure_player_loaded on 10 min: {elapsed * 1000:.1f} ms")
     assert elapsed < 0.05
     win.discard_button.click()
+
+
+def type_filename(qtbot, win, name):
+    win.filename_edit.clear()
+    qtbot.keyClicks(win.filename_edit, name)
+
+
+def test_save_adds_missing_extension(qtbot, make_window, tmp_path):
+    win = make_window(last_format="mp3")
+    record(qtbot, win)
+    stop(qtbot, win)
+    type_filename(qtbot, win, "One More Time")
+    with qtbot.waitSignal(win.export_finished, timeout=5000) as sig:
+        win.save_button.click()
+    assert sig.args == [True]
+    assert (tmp_path / "out" / "One More Time.mp3").is_file()
+    assert not (tmp_path / "out" / "One More Time").exists()
+
+
+def test_save_swaps_wrong_extension_and_shows_it(qtbot, make_window, tmp_path):
+    win = make_window(last_format="flac")
+    record(qtbot, win)
+    stop(qtbot, win)
+    type_filename(qtbot, win, "Song.mp3")
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "Song.flac").write_bytes(b"keep")
+    asked = []
+    win._ask_overwrite = lambda path: asked.append(path) or False
+    win.save_button.click()
+    assert asked == [tmp_path / "out" / "Song.flac"]
+    assert win.filename_edit.text() == "Song.flac"
+    assert win.state is State.STOPPED
+
+
+def test_save_empty_name_uses_generated_name(qtbot, make_window, tmp_path):
+    win = make_window(last_format="wav")
+    record(qtbot, win)
+    stop(qtbot, win)
+    win.filename_edit.selectAll()
+    qtbot.keyClick(win.filename_edit, Qt.Key_Backspace)    # a user edit: auto-fill stops
+    qtbot.keyClicks(win.title_edit, "Take")
+    assert win.filename_edit.text() == ""
+    with qtbot.waitSignal(win.export_finished, timeout=5000) as sig:
+        win.save_button.click()
+    assert sig.args == [True]
+    assert (tmp_path / "out" / "Take.wav").is_file()
+
+
+@pytest.mark.parametrize("name", ["AC/DC - TNT", "What?", r"..\x"])
+def test_save_rejects_bad_file_name(qtbot, make_window, tmp_path, name):
+    win = make_window(last_format="wav")
+    record(qtbot, win)
+    stop(qtbot, win)
+    type_filename(qtbot, win, name)
+    win.save_button.click()
+    assert [kind for kind, _ in win.calls] == ["error"]
+    assert win.calls[0][1] == BAD_NAME_MESSAGE
+    assert win._export_task is None
+    assert win.state is State.STOPPED
+    assert not (tmp_path / "out").exists() or not any((tmp_path / "out").iterdir())
+    assert not (tmp_path / "x.wav").exists()
+
+
+def test_markers_locked_while_saving_and_restored_on_failure(qtbot, make_window, monkeypatch):
+    import audiorec.gui.main_window as mw
+    gate = threading.Event()
+
+    def failing_export(*args, **kw):
+        gate.wait(3)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(mw, "export", failing_export)
+    win = make_window(last_format="wav")
+    record(qtbot, win, seconds=1.0)
+    stop(qtbot, win)
+    start, end = win._selection()
+    win.waveform.set_selection(start + RATE // 10, end)
+    trimmed = win._selection()
+    win.main_button.click()                    # play once so a player is loaded
+    win.main_button.click()
+    win.save_button.click()
+    assert win.state is State.SAVING
+    assert not win.waveform._editable
+    with qtbot.waitSignal(win.export_finished, timeout=5000):
+        gate.set()
+    assert win.state is State.STOPPED
+    assert win.waveform._editable
+    assert win._selection() == trimmed
+    assert win._player_dirty                   # the next Play reloads the selection
+
+
+def _slow_export(ok):
+    def job(session, start, end, fmt, dest, tags, progress=None):
+        time.sleep(0.3)
+        if not ok:
+            raise OSError("disk full")
+        dest.write_bytes(b"audio")
+        return dest
+    return job
+
+
+@pytest.mark.parametrize("ok", [True, False])
+def test_close_while_saving(qtbot, make_window, monkeypatch, tmp_path, ok):
+    import audiorec.gui.main_window as mw
+    monkeypatch.setattr(mw, "export", _slow_export(ok))
+    win = make_window(last_format="wav")
+    record(qtbot, win)
+    stop(qtbot, win)
+    folder = win.session.folder
+    type_filename(qtbot, win, "Take")
+    win.save_button.click()
+    assert win.state is State.SAVING
+    win.close()
+    assert (tmp_path / "out" / "Take.wav").exists() is ok
+    assert folder.exists() is not ok           # deleted only once it is safely saved
+
+
+def test_device_fails_to_open_returns_to_ready(qtbot, make_window, tmp_path):
+    win = make_window()
+
+    def broken_open(dev):
+        raise OSError("Device unavailable")
+
+    win.provider.open = broken_open
+    win.main_button.click()
+    assert win.state is State.RECORDING
+    qtbot.waitUntil(lambda: win.state is State.READY, timeout=3000)
+    assert win.session is None
+    assert win.calls == [("error", "Device unavailable")]
+    sessions = tmp_path / "sessions"
+    assert not sessions.exists() or not any(sessions.iterdir())
+    assert win.main_button.isEnabled()
+    assert win.main_button.property("icon_name") == "record"
+    assert not win.stop_button.isEnabled()
+    assert win.device_combo.isEnabled()
+    assert not win.save_panel.isEnabled()
