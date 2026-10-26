@@ -1,7 +1,5 @@
-"""Streaming MP3 encoder sink: 320 kbps CBR, flat memory however long it runs."""
+"""MP3 encoding settings: 320 kbps CBR at the rates MP3 accepts."""
 from __future__ import annotations
-
-from typing import BinaryIO
 
 import lameenc
 
@@ -24,15 +22,3 @@ def build_encoder(rate: int) -> lameenc.Encoder:
     enc.set_channels(2)
     enc.set_quality(2)                  # 2 = high quality, 7 = fastest
     return enc
-
-
-class Mp3StreamSink:
-    def __init__(self, f: BinaryIO, rate: int) -> None:
-        self._f = f
-        self._enc = build_encoder(rate)
-
-    def write(self, pcm: bytes) -> None:
-        self._f.write(self._enc.encode(pcm))
-
-    def finish(self) -> None:
-        self._f.write(self._enc.flush())

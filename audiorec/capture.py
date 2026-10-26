@@ -1,5 +1,5 @@
 """
-Qt-free WASAPI loopback capture: device selection, PCM conversion, level
+Qt-free WASAPI loopback capture: device listing, PCM conversion, level
 metering, a pausable wall clock and a sink-agnostic capture loop.
 """
 from __future__ import annotations
@@ -19,27 +19,8 @@ GAP_TOLERANCE_S = 0.25                  # idle time before silence is padded
 BYTES_PER_FRAME = 4                     # stereo int16
 
 
-class DeviceError(Exception):
-    """No usable loopback device (raised instead of exiting, so a GUI can show it)."""
-
-
 def list_loopback_devices(p: pyaudio.PyAudio) -> list[dict]:
     return list(p.get_loopback_device_info_generator())
-
-
-def pick_device(p: pyaudio.PyAudio, index: int | None) -> dict:
-    if index is not None:
-        try:
-            dev = p.get_device_info_by_index(index)
-        except OSError:                 # PortAudio raises this for unknown indices
-            raise DeviceError(f"Device {index} does not exist.") from None
-        if not dev.get("isLoopbackDevice"):
-            raise DeviceError(f"Device {index} is not a WASAPI loopback device.")
-        return dev
-    try:
-        return p.get_default_wasapi_loopback()
-    except (OSError, LookupError):
-        raise DeviceError("No default WASAPI loopback device found.") from None
 
 
 def to_stereo_int16(raw: bytes, channels: int) -> bytes:

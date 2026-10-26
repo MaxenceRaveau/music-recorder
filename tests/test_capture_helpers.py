@@ -36,14 +36,3 @@ def test_pause_clock_double_pause_is_noop():
     c.pause(2.0)
     c.resume(3.0)
     assert c.frames_due(4.0) == 2000
-
-
-def test_pick_device_invalid_index_raises_device_error():
-    from audiorec.capture import DeviceError, pick_device
-
-    class P:
-        def get_device_info_by_index(self, index):
-            raise OSError(-9996, "Invalid device")
-
-    with pytest.raises(DeviceError):
-        pick_device(P(), 99)

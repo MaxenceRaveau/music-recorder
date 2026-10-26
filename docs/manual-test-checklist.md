@@ -10,5 +10,4 @@ Run `python recorder_gui.py` and play a real song (for example in Spotify).
 - [ ] 6. Save as MP3, then repeat with FLAC. Open both in a music player: correct length (pause excluded), tags and cover shown, no audible glitch at the pause point.
 - [ ] 7. Record again and kill the process from Task Manager; relaunch, recovery dialog appears; Open, trim, Save works.
 - [ ] 8. Save into a file that is open or locked elsewhere: an error is shown and the recording is still there.
-- [ ] 9. CLI: `python record_system_audio.py --list` lists devices; then run `python record_system_audio.py`, play audio about 10 s, pause playback 3 s, press Ctrl+C. An MP3 appears in `recordings/`, plays, and its length is about the wall-clock time including the 3 s of silence.
-- [ ] 10. Shortcut: run `make_shortcut.ps1`; the Desktop shortcut opens the window with no console.
+- [ ] 9. Shortcut: run `make_shortcut.ps1`; the Desktop shortcut opens the window with no console.

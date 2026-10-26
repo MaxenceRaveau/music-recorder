@@ -25,20 +25,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File make_shortcut.ps1
 
 Use `-Destination <folder>` to create the shortcut somewhere other than the Desktop.
 
-## Run the CLI
-
-Records straight to a 320 kbps MP3. Stop with Ctrl+C.
-
-```
-python record_system_audio.py                  # default output device
-python record_system_audio.py --list           # show loopback devices
-python record_system_audio.py --device 12 --outdir D:/recordings
-```
-
 ## Where files go
 
 - Saved recordings: the folder you choose in the window (default `recordings/`
-  next to the script).
+  next to the app).
 - In-progress work: `%LOCALAPPDATA%\AudioRecorder\sessions\<YYYYmmdd_HHMMSS>\`
   (`audio.pcm` and `session.json`). These files are deleted only after a
   successful Save or a confirmed Discard.

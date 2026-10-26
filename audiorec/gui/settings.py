@@ -11,7 +11,7 @@ from PySide6.QtCore import QSettings
 import audiorec
 from audiorec.naming import FORMATS
 
-# Same place the CLI writes to: recordings/ next to record_system_audio.py.
+# recordings/ next to the app.
 DEFAULT_FOLDER = Path(audiorec.__file__).resolve().parent.parent / "recordings"
 
 
