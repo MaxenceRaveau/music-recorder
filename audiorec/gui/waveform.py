@@ -1,13 +1,15 @@
 """
 Waveform display: live min/max envelope while recording, then a selection
 (two draggable markers, greyed-out outside) and a playhead after Stop.
+After Stop the wheel zooms around the cursor, Shift+wheel (or a horizontal
+wheel) scrolls, and a double-click fits the whole recording again.
 All x values are absolute frames.
 """
 from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QPointF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPointF, Qt, QTimer, Signal
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from audiorec.export import MIN_SELECTION_S
@@ -16,6 +18,11 @@ from audiorec.peaks import block_frames
 HINT_TEXT = "Waveform appears here when you start recording"
 _LINE_HIT_PX = 4  # clicks this close to a marker/playhead are not seeks
 _MAX_COLUMNS = 4000  # more than a screen can show; keeps redraw cheap
+_ZOOM_STEP = 1.25  # view span factor per wheel notch
+_PAN_STEP = 0.1  # fraction of the view scrolled per wheel notch
+_MIN_PX_PER_BLOCK = 4  # deepest zoom: one peak block is this many pixels wide
+_FOLLOW_MARGIN = 0.05  # a paged view puts the playhead this far from its left edge
+ZOOM_TIP = "Wheel: zoom  ·  Shift+wheel: scroll  ·  Double-click: show all"
 
 
 class WaveformView(QWidget):
@@ -32,6 +39,7 @@ class WaveformView(QWidget):
         self._dirty = False
         self._editable = False
         self._sel = (0, 0)
+        self._view: tuple[float, float] | None = None  # None = whole recording
 
         self._plot = pg.PlotWidget()
         self._plot.setMouseEnabled(False, False)
@@ -70,6 +78,7 @@ class WaveformView(QWidget):
         self._hint.setStyleSheet("color: grey; background: transparent;")
 
         self._plot.scene().sigMouseClicked.connect(self._on_scene_click)
+        self._plot.viewport().installEventFilter(self)
         self._timer = QTimer(self)
         self._timer.setInterval(33)
         self._timer.timeout.connect(self._tick)
@@ -82,6 +91,7 @@ class WaveformView(QWidget):
         self._peaks = np.empty((0, 2), np.float32)
         self._dirty = False
         self._sel = (0, 0)
+        self._view = None
         self._curve.setData([], [])
         self._plot.setXRange(0, 1, padding=0)
         self.set_editable(False)
@@ -103,6 +113,8 @@ class WaveformView(QWidget):
     def set_editable(self, editable: bool) -> None:
         self._editable = editable
         self._flush()
+        self._view = None
+        self.setToolTip(ZOOM_TIP if editable else "")
         if editable:
             self._sel = (0, self._total())
             self._apply_sel()
@@ -121,6 +133,35 @@ class WaveformView(QWidget):
         else:
             self._playhead.setValue(frame)
             self._playhead.setVisible(True)
+            self._follow(frame)
+
+    def view_range(self) -> tuple[float, float]:
+        if self._view is None:
+            return 0.0, float(max(self._total(), 1))
+        return self._view
+
+    def zoom(self, factor: float, anchor: float) -> None:
+        """Scale the visible span by `factor` (<1 zooms in), keeping `anchor` in place."""
+        total = self._total()
+        if not self._editable or not total:
+            return
+        x0, x1 = self.view_range()
+        span = min(max((x1 - x0) * factor, self._min_span()), total)
+        left = anchor - (anchor - x0) * span / (x1 - x0)
+        self._set_view(left, left + span)
+
+    def pan(self, fraction: float) -> None:
+        """Scroll by `fraction` of the visible span (positive = later)."""
+        if not self._editable or self._view is None:
+            return
+        x0, x1 = self._view
+        d = (x1 - x0) * fraction
+        self._set_view(x0 + d, x1 + d)
+
+    def reset_zoom(self) -> None:
+        if self._view is not None:
+            self._view = None
+            self._redraw()
 
     # ---- internals --------------------------------------------------------
     def _total(self) -> int:
@@ -128,6 +169,28 @@ class WaveformView(QWidget):
 
     def _min_len(self) -> int:
         return int(MIN_SELECTION_S * self._rate)
+
+    def _min_span(self) -> int:
+        px = max(self._plot.viewport().width(), 1)
+        return max(px // _MIN_PX_PER_BLOCK, 1) * self._block
+
+    def _set_view(self, x0: float, x1: float) -> None:
+        total, span = self._total(), x1 - x0
+        if span >= total:
+            self._view = None
+        else:
+            x0 = min(max(x0, 0.0), total - span)
+            self._view = (x0, x0 + span)
+        self._redraw()
+
+    def _follow(self, frame: int) -> None:
+        """Page a zoomed view so the playhead stays on screen."""
+        if self._view is None:
+            return
+        x0, x1 = self._view
+        if not x0 <= frame <= x1:
+            left = frame - (x1 - x0) * _FOLLOW_MARGIN
+            self._set_view(left, left + x1 - x0)
 
     def _clamp(self, start: int, end: int) -> tuple[int, int]:
         total, min_len = self._total(), self._min_len()
@@ -185,7 +248,12 @@ class WaveformView(QWidget):
         if n == 0:
             self._curve.setData([], [])
             return
-        peaks, group = self._peaks, 1
+        x0, x1 = self.view_range()
+        # only the visible blocks (plus one each side so edges stay drawn)
+        i0 = max(int(x0 // self._block) - 1, 0)
+        i1 = min(int(x1 // self._block) + 2, n)
+        peaks, group = self._peaks[i0:i1], 1
+        n = len(peaks)
         if n > _MAX_COLUMNS:
             # decimate: combine `group` blocks into one (min of mins, max of maxes)
             group = -(-n // _MAX_COLUMNS)
@@ -194,14 +262,17 @@ class WaveformView(QWidget):
                 peaks = np.concatenate([peaks, np.repeat(peaks[-1:], pad, axis=0)])
             r = peaks.reshape(-1, group, 2)
             peaks = np.stack([r[:, :, 0].min(axis=1), r[:, :, 1].max(axis=1)], axis=1)
-        x = np.repeat(np.arange(len(peaks), dtype=np.float64) * group * self._block, 2)
+        x = np.repeat((i0 + np.arange(len(peaks), dtype=np.float64) * group) * self._block, 2)
         self._curve.setData(x, peaks.reshape(-1), connect="pairs")
-        self._plot.setXRange(0, max(self._total(), 1), padding=0)
+        self._plot.setXRange(x0, x1, padding=0)
         if self._editable:
             self._apply_sel()
 
     def _on_scene_click(self, ev) -> None:
-        if ev.button() != Qt.LeftButton or ev.double():
+        if ev.button() != Qt.LeftButton:
+            return
+        if ev.double():
+            self.reset_zoom()
             return
         vb = self._plot.getPlotItem().vb
         if not vb.sceneBoundingRect().contains(ev.scenePos()):
@@ -219,6 +290,21 @@ class WaveformView(QWidget):
         total = self._total()
         if total:
             self.seekRequested.emit(int(min(max(x, 0), total)))
+
+    def eventFilter(self, obj, ev) -> bool:
+        if obj is self._plot.viewport() and ev.type() == QEvent.Wheel:
+            self._on_wheel(ev)
+            return True
+        return super().eventFilter(obj, ev)
+
+    def _on_wheel(self, ev) -> None:
+        d = ev.angleDelta()
+        if ev.modifiers() & Qt.ShiftModifier or (d.x() and not d.y()):
+            self.pan(-(d.y() or d.x()) / 120 * _PAN_STEP)
+        elif d.y():
+            scene = self._plot.mapToScene(ev.position().toPoint())
+            anchor = self._plot.getPlotItem().vb.mapSceneToView(scene).x()
+            self.zoom(_ZOOM_STEP ** (-d.y() / 120), anchor)
 
     def _layout_hint(self) -> None:
         self._hint.setGeometry(self._plot.rect())
