@@ -36,36 +36,46 @@ def test_sidebar_switches_pages(qtbot, make_recorder):
 
 def test_close_refused_by_a_page_keeps_window(qtbot, make_recorder):
     page = QWidget()
-    page.request_close = lambda: False
+    page.confirm_close = lambda: False
     win = AppWindow(make_recorder(), [("Converter", page)])
     qtbot.addWidget(win)
     win.show()
     assert win.close() is False and win.isVisible()
 
 
-def test_close_asks_recorder_first_and_accepts(qtbot, make_recorder):
-    order = []
+def test_refusing_page_leaves_recorder_untouched(qtbot, make_recorder):
     rec = make_recorder()
-    rec.request_close = lambda: order.append("recorder") or True
-    page = QWidget()
-    page.request_close = lambda: order.append("page") or True
-    win = AppWindow(rec, [("Converter", page)])
-    qtbot.addWidget(win)
-    win.show()
-    assert win.close() is True
-    assert order == ["recorder", "page"]
-
-
-def test_recorder_declining_stops_before_pages(qtbot, make_recorder):
-    rec = make_recorder()
-    rec.request_close = lambda: False
     asked = []
+    rec._confirm = lambda title, text: asked.append(1) or True
     page = QWidget()
-    page.request_close = lambda: asked.append(1) or True
+    page.confirm_close = lambda: False
     win = AppWindow(rec, [("Converter", page)])
     qtbot.addWidget(win)
     win.show()
-    assert win.close() is False and not asked
+    rec.main_button.click()
+    qtbot.waitUntil(lambda: rec.session is not None and rec.session.frames > 0, timeout=3000)
+    state = rec.state
+    assert win.close() is False and win.isVisible()
+    assert rec.state is state and rec._worker is not None
+    rec._confirm = lambda title, text: True
+    rec.shutdown()
+
+
+def test_all_confirm_shuts_down_once(qtbot, make_recorder):
+    rec = make_recorder()
+    asked = []
+    rec._confirm = lambda title, text: asked.append(1) or True
+    shut = []
+    page = QWidget()
+    page.confirm_close = lambda: True
+    page.shutdown = lambda: shut.append(1)
+    win = AppWindow(rec, [("Converter", page)])
+    qtbot.addWidget(win)
+    win.show()
+    rec.main_button.click()
+    qtbot.waitUntil(lambda: rec.session is not None and rec.session.frames > 0, timeout=3000)
+    assert win.close() is True
+    assert asked == [1] and shut == [1] and rec._worker is None
 
 
 def test_converter_settings_round_trip(tmp_path):

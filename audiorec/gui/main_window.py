@@ -766,17 +766,25 @@ class MainWindow(QMainWindow):
         self._update_format_options()       # applies the controls too
 
     # ---- closing ----------------------------------------------------------
-    def request_close(self) -> bool:
-        """Stop background work and confirm quitting; False if the user declines."""
+    def confirm_close(self) -> bool:
+        """Ask whether quitting is OK. No side effects."""
+        return self.state is State.READY or self._confirm(
+            "Quit Audio Recorder", CLOSE_MESSAGES[self.state])
+
+    def shutdown(self) -> None:
+        """Stop background work (call only after confirm_close returned True)."""
         if self._recovery_task is not None:     # still rebuilding peaks: drop the result
             for sig in (self._recovery_task.signals.done, self._recovery_task.signals.failed):
                 sig.disconnect()
             QThreadPool.globalInstance().waitForDone()
             self._end_recovery()
         if self.state is not State.READY:
-            if not self._confirm("Quit Audio Recorder", CLOSE_MESSAGES[self.state]):
-                return False
             self._shutdown()
+
+    def request_close(self) -> bool:
+        if not self.confirm_close():
+            return False
+        self.shutdown()
         return True
 
     def closeEvent(self, event: QCloseEvent) -> None:

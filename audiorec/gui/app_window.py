@@ -47,10 +47,15 @@ class AppWindow(QMainWindow):
         self.recorder.check_leftovers()
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        # Recorder first; stop at the first refusal so no later page is torn down.
+        # Two phases: every page confirms first (no side effects), and only when
+        # all agree is any background work stopped.
         for page in self._pages:
-            ask = getattr(page, "request_close", None)
-            if ask is not None and not ask():
+            confirm = getattr(page, "confirm_close", None)
+            if confirm is not None and not confirm():
                 event.ignore()
                 return
+        for page in self._pages:
+            shutdown = getattr(page, "shutdown", None)
+            if shutdown is not None:
+                shutdown()
         super().closeEvent(event)
