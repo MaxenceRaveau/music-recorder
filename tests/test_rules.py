@@ -1,7 +1,7 @@
 import pytest
 
 from audiorec.convert.probe import AudioInfo
-from audiorec.convert.rules import EncodeParams, can_copy, encode_params, out_rate
+from audiorec.convert.rules import EncodeParams, can_copy, encode_params, estimate_bytes, out_rate
 
 
 def info(**kw):
@@ -24,6 +24,9 @@ def test_wav_8bit_and_float_are_converted():
     assert not can_copy(info(codec="float", container="wav", bits=32), "wav")
 def test_wav_with_aiff_target_is_converted():     assert not can_copy(info(codec="pcm", container="wav", bits=16), "aiff")
 def test_mp3_with_wav_target_is_converted():      assert not can_copy(info(), "wav")
+def test_multichannel_wav_is_converted():
+    assert not can_copy(info(codec="pcm", container="wav", bits=24, rate=48000, channels=6), "wav")
+def test_multichannel_mp3_is_converted():         assert not can_copy(info(channels=6), "mp3")
 
 
 @pytest.mark.parametrize("src,out", [(44100, 44100), (48000, 48000), (88200, 44100), (176400, 44100),
@@ -36,3 +39,10 @@ def test_encode_params_caps_depth_and_channels():
     assert encode_params(info(codec="float", container="wav", bits=32, channels=1), "aiff") == EncodeParams(44100, 1, 24)
     assert encode_params(info(codec="pcm", container="wav", bits=8), "wav").bits == 16
     assert encode_params(info(codec="flac", bits=24), "mp3").bits == 0
+
+
+def test_estimate_bytes():
+    assert estimate_bytes(info(), "wav", src_size=1234, copy=True) == 1234
+    assert estimate_bytes(info(duration_s=10.0), "mp3", src_size=0, copy=False) == 400_000
+    hi_res = info(codec="pcm", container="wav", bits=24, rate=96000, channels=2, duration_s=10.0)
+    assert estimate_bytes(hi_res, "wav", src_size=0, copy=False) == 2_880_000

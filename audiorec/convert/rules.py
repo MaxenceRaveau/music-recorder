@@ -44,8 +44,8 @@ def can_copy(info: AudioInfo, target: str) -> bool:
     if target not in _COPY_RULES:
         return False
     codec, container, extra = _COPY_RULES[target]
-    return (info.rate in _CDJ_RATES and info.codec == codec
-            and info.container == container and extra(info))
+    return (info.rate in _CDJ_RATES and info.channels <= 2
+            and info.codec == codec and info.container == container and extra(info))
 
 
 def encode_params(info: AudioInfo, target: str) -> EncodeParams:
