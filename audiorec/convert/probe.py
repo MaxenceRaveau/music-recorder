@@ -58,12 +58,19 @@ def probe(path: Path) -> AudioInfo:
         common = dict(rate=int(i.sample_rate), channels=int(i.channels),
                       duration_s=float(i.length))
         if isinstance(f, MP3):
+            if i.layer != 3:  # mutagen also accepts MPEG Layer I/II streams
+                return _OTHER
             return AudioInfo("mp3", "mp3", _MP3_PROFILE.get(i.version, ""), bits=0,
                              bitrate_kbps=int(i.bitrate // 1000), **common)
         if isinstance(f, MP4):
             kbps = int(i.bitrate // 1000)
             if i.codec in _AAC_PROFILE:
-                return AudioInfo("aac", "mp4", _AAC_PROFILE[i.codec], bits=0,
+                profile = _AAC_PROFILE[i.codec]
+                # Implicit-SBR HE-AAC is signalled as plain LC with half the
+                # real sample rate; no real LC file is this low in practice.
+                if profile == "lc" and common["rate"] <= 24000:
+                    profile = "he"
+                return AudioInfo("aac", "mp4", profile, bits=0,
                                  bitrate_kbps=kbps, **common)
             if i.codec == "alac":
                 return AudioInfo("alac", "mp4", "", bits=int(i.bits_per_sample),
