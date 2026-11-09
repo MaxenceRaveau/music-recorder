@@ -2,19 +2,18 @@
 
 Windows app that records whatever your PC is playing (WASAPI loopback). Record,
 pause and resume, trim the start and end on a waveform, preview the selection,
-tag it, then save once as MP3 (320 kbps), FLAC or WAV. A command-line recorder
-is also included.
+tag it, then save once as MP3 (320 kbps), FLAC or WAV.
 
 ## Install
 
 ```
-python -m pip install -r requirements.txt
+uv sync
 ```
 
 ## Run the GUI
 
 ```
-python recorder_gui.py
+uv run recorder_gui.py
 ```
 
 Optional desktop shortcut that opens the window without a console:
@@ -45,5 +44,5 @@ output device runs at another rate, MP3 is unavailable: switch the device to
 ## Tests
 
 ```
-python -m pytest
+uv run pytest
 ```
