@@ -9,6 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import QSettings
 
 import audiorec
+from audiorec.convert.formats import TARGETS
 from audiorec.naming import FORMATS
 
 # recordings/ next to the app.
@@ -50,4 +51,34 @@ class AppSettings:
     @last_device_name.setter
     def last_device_name(self, name: str | None) -> None:
         self._s.setValue("last_device_name", name or "")
+        self._s.sync()
+
+    @property
+    def conv_library(self) -> Path | None:
+        value = self._str("conv_library")
+        return Path(value) if value else None
+
+    @conv_library.setter
+    def conv_library(self, folder: Path | None) -> None:
+        self._s.setValue("conv_library", str(folder) if folder else "")
+        self._s.sync()
+
+    @property
+    def conv_dest(self) -> Path | None:
+        value = self._str("conv_dest")
+        return Path(value) if value else None
+
+    @conv_dest.setter
+    def conv_dest(self, folder: Path | None) -> None:
+        self._s.setValue("conv_dest", str(folder) if folder else "")
+        self._s.sync()
+
+    @property
+    def conv_format(self) -> str:
+        value = self._str("conv_format")
+        return value if value in TARGETS else "mp3"
+
+    @conv_format.setter
+    def conv_format(self, fmt: str) -> None:
+        self._s.setValue("conv_format", fmt)
         self._s.sync()

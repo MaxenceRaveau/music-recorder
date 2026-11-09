@@ -766,7 +766,8 @@ class MainWindow(QMainWindow):
         self._update_format_options()       # applies the controls too
 
     # ---- closing ----------------------------------------------------------
-    def closeEvent(self, event: QCloseEvent) -> None:
+    def request_close(self) -> bool:
+        """Stop background work and confirm quitting; False if the user declines."""
         if self._recovery_task is not None:     # still rebuilding peaks: drop the result
             for sig in (self._recovery_task.signals.done, self._recovery_task.signals.failed):
                 sig.disconnect()
@@ -774,9 +775,14 @@ class MainWindow(QMainWindow):
             self._end_recovery()
         if self.state is not State.READY:
             if not self._confirm("Quit Audio Recorder", CLOSE_MESSAGES[self.state]):
-                event.ignore()
-                return
+                return False
             self._shutdown()
+        return True
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if not self.request_close():
+            event.ignore()
+            return
         super().closeEvent(event)
 
     def _shutdown(self) -> None:

@@ -16,46 +16,7 @@ from audiorec.gui.settings import AppSettings
 from audiorec.gui.state import State
 from audiorec.mp3sink import mp3_rate_message
 from audiorec.playback import Player
-from tests.fakes import SineSource
-
-RATE = 48000
-
-
-def device(index, name, rate=RATE, channels=2):
-    return {"index": index, "name": name, "defaultSampleRate": float(rate),
-            "maxInputChannels": channels}
-
-
-class FakeProvider:
-    def __init__(self, devices, default_index=0):
-        self.devices = devices
-        self.default_index = default_index
-        self.sources: list[SineSource] = []
-
-    def list(self):
-        return list(self.devices)
-
-    def default(self):
-        return self.devices[self.default_index]
-
-    def open(self, dev):
-        src = SineSource(int(dev["defaultSampleRate"]), int(dev["maxInputChannels"]))
-        self.sources.append(src)
-        return src
-
-
-class FakeStream:
-    def __init__(self, **kw):
-        self.kw = kw
-
-    def start(self):
-        pass
-
-    def stop(self):
-        pass
-
-    def close(self):
-        pass
+from tests.fakes import RATE, FakeProvider, FakeStream, device
 
 
 @pytest.fixture
