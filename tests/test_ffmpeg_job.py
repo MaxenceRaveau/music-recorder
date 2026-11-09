@@ -121,7 +121,7 @@ def test_cancel_kills_ffmpeg_and_cleans(tmp_path):
 
     with pytest.raises(JobCancelled):
         process_job(job, "mp3", register=register, cancelled=lambda: state["p"] is not None)
-    assert state["p"].poll() is not None
+    assert state["p"].poll() not in (None, 0)
     assert not job.dst.exists()
     assert not job.dst.with_name(job.dst.name + ".part").exists()
 

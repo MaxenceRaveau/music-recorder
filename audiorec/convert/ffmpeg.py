@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -31,6 +32,16 @@ _EASY_TO_ID3 = {
 }
 
 
+def _remove(path: Path) -> None:
+    # Right after a kill, AV or indexers can briefly hold the file on Windows.
+    for _ in range(5):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except OSError:
+            time.sleep(0.1)
+
+
 class JobFailed(Exception):
     pass
 
@@ -40,7 +51,7 @@ class JobCancelled(Exception):
 
 
 def build_command(exe: str, src: Path, part: Path, target: str, params: EncodeParams) -> list[str]:
-    cmd = [exe, "-hide_banner", "-nostdin", "-y", "-i", str(src),
+    cmd = [exe, "-hide_banner", "-nostats", "-loglevel", "error", "-nostdin", "-y", "-i", str(src),
            "-map", "0:a:0", "-map", "0:v:0?", "-map_metadata", "0",
            "-ar", str(params.rate), "-ac", str(params.channels)]
     if target == "mp3":
@@ -95,8 +106,8 @@ def _write_id3_chunk(src: Path, part: Path, target: str) -> None:
 def _run_ffmpeg(cmd: list[str], register: Callable, cancelled: Callable[[], bool]) -> None:
     p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.PIPE, creationflags=_FLAGS)
-    register(p)
     try:
+        register(p)
         while True:
             try:
                 _, err = p.communicate(timeout=0.1)
@@ -123,6 +134,8 @@ def process_job(job: Job, target: str, *,
                 cancelled: Callable[[], bool] = lambda: False) -> None:
     if job.action not in (Action.CONVERT, Action.COPY):
         raise ValueError(f"cannot process a {job.action.value} job")
+    if cancelled():
+        raise JobCancelled()
     part = job.dst.with_name(job.dst.name + ".part")
     try:
         job.dst.parent.mkdir(parents=True, exist_ok=True)
@@ -138,8 +151,8 @@ def process_job(job: Job, target: str, *,
             raise JobCancelled()
         os.replace(part, job.dst)
     except (JobFailed, JobCancelled):
-        part.unlink(missing_ok=True)
+        _remove(part)
         raise
     except Exception as e:  # OSError, mutagen errors
-        part.unlink(missing_ok=True)
+        _remove(part)
         raise JobFailed(str(e)) from e
