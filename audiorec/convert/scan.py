@@ -48,6 +48,8 @@ def validate_paths(library: Path, dest: Path) -> str | None:
         return "Destination can't be the library folder."
     if dst.startswith(lib.rstrip(os.sep) + os.sep):
         return "Destination can't be inside the library folder."
+    if lib.startswith(dst.rstrip(os.sep) + os.sep):
+        return "Destination can't contain the library folder."
     return None
 
 

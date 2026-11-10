@@ -76,3 +76,12 @@ def test_validate_paths(tmp_path):
     assert validate_paths(lib, lib / "sub") == "Destination can't be inside the library folder."
     assert validate_paths(lib, Path("")) == "Choose a destination folder."
     assert validate_paths(lib, tmp_path / "out") is None
+
+
+def test_validate_paths_rejects_destination_containing_library(tmp_path):
+    lib = tmp_path / "Music"
+    lib.mkdir()
+    msg = "Destination can't contain the library folder."
+    assert validate_paths(lib, tmp_path) == msg
+    assert validate_paths(lib, Path(lib.anchor)) == msg
+    assert validate_paths(lib, tmp_path / "Mus") is None
