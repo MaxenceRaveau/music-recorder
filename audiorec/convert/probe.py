@@ -2,6 +2,10 @@
 Read the technical facts about an audio file (codec, rate, bit depth...) that
 the conversion rules need. Never raises: an unreadable or unsupported file
 comes back as codec "other" so the caller just converts it.
+
+Container "wav"/"aiff"/"mp4" means the plain variant a CDJ-2000 reads; the
+look-alikes (WAVE_FORMAT_EXTENSIBLE, RF64, AIFF-C, MP4 with a video track)
+report "other" so they are converted rather than copied.
 """
 from __future__ import annotations
 
@@ -12,7 +16,7 @@ import mutagen
 import soundfile
 from mutagen.flac import FLAC
 from mutagen.mp3 import MP3
-from mutagen.mp4 import MP4
+from mutagen.mp4 import MP4, Atoms
 
 _MP3_PROFILE = {1: "mpeg1", 2: "mpeg2", 2.5: "mpeg25"}
 _AAC_PROFILE = {"mp4a.40.2": "lc", "mp4a.40.5": "he", "mp4a.40.29": "he"}
@@ -34,10 +38,31 @@ class AudioInfo:
 _OTHER = AudioInfo("other", "other", "", 0, 0, 0, 0, 0.0)
 
 
+def _has_video_track(path: Path) -> bool:
+    # Cover art lives in moov/udta/meta/ilst/covr, never in a trak.
+    with open(path, "rb") as fh:
+        atoms = Atoms(fh)
+        for trak in atoms[b"moov"].findall(b"trak"):
+            try:
+                hdlr = trak[b"mdia", b"hdlr"]
+            except KeyError:
+                continue
+            ok, data = hdlr.read(fh)
+            if ok and data[8:12] == b"vide":
+                return True
+    return False
+
+
 def _pcm(path: Path) -> AudioInfo:
     info = soundfile.info(str(path))
     fmt = info.format
-    container = "wav" if fmt in ("WAV", "WAVEX", "RF64") else "aiff" if fmt == "AIFF" else "other"
+    if fmt == "WAV":  # WAVEX and RF64 are reported separately by libsndfile
+        container = "wav"
+    elif fmt == "AIFF":
+        with open(path, "rb") as fh:
+            container = "aiff" if fh.read(12)[8:12] == b"AIFF" else "other"  # not AIFC
+    else:
+        container = "other"
     if info.subtype in _PCM_BITS:
         codec, bits = "pcm", _PCM_BITS[info.subtype]
     elif info.subtype in ("FLOAT", "DOUBLE"):
@@ -64,6 +89,10 @@ def probe(path: Path) -> AudioInfo:
                              bitrate_kbps=int(i.bitrate // 1000), **common)
         if isinstance(f, MP4):
             kbps = int(i.bitrate // 1000)
+            if _has_video_track(path):
+                return AudioInfo("aac" if i.codec in _AAC_PROFILE else "other", "other",
+                                 _AAC_PROFILE.get(i.codec, ""), bits=0,
+                                 bitrate_kbps=kbps, **common)
             if i.codec in _AAC_PROFILE:
                 profile = _AAC_PROFILE[i.codec]
                 # Implicit-SBR HE-AAC is signalled as plain LC with half the

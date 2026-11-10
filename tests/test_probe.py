@@ -1,10 +1,12 @@
 from pathlib import Path
 
+import numpy as np
 import pytest
+import soundfile
 
 from audiorec.convert.formats import is_audio
 from audiorec.convert.probe import probe
-from tests.audio_files import make_audio
+from tests.audio_files import make_audio, make_music_video
 
 
 @pytest.mark.parametrize("name,args,expect", [
@@ -12,9 +14,13 @@ from tests.audio_files import make_audio
     ("a.m4a",  ["-c:a", "aac", "-b:a", "256k"],        dict(codec="aac", container="mp4", profile="lc")),
     ("b.m4a",  ["-c:a", "alac"],                        dict(codec="alac", container="mp4")),
     ("a.flac", ["-c:a", "flac"],                        dict(codec="flac")),
-    ("a.wav",  ["-c:a", "pcm_s24le"],                   dict(codec="pcm", container="wav", bits=24)),
+    # ffmpeg writes 24-bit PCM as WAVE_FORMAT_EXTENSIBLE: not a plain WAV for the CDJ.
+    ("a.wav",  ["-c:a", "pcm_s24le"],                   dict(codec="pcm", container="other", bits=24)),
     ("f.wav",  ["-c:a", "pcm_f32le"],                   dict(codec="float", container="wav")),
+    ("s.wav",  ["-c:a", "pcm_s16le"],                   dict(codec="pcm", container="wav", bits=16)),
     ("a.aiff", ["-c:a", "pcm_s16be"],                   dict(codec="pcm", container="aiff", bits=16)),
+    # little-endian PCM in AIFF is written as AIFF-C (sowt)
+    ("c.aiff", ["-c:a", "pcm_s16le", "-f", "aiff"],     dict(codec="pcm", container="other", bits=16)),
     ("a.ogg",  ["-c:a", "libvorbis"],                   dict(codec="other")),
 ])
 def test_probe_reads_codec_and_container(tmp_path, name, args, expect):
@@ -42,3 +48,15 @@ def test_probe_low_rate_aac_is_treated_as_he(tmp_path):
 def test_probe_mpeg_layer2_in_mp3_file_is_other(tmp_path):
     p = make_audio(tmp_path / "x.mp3", codec_args=["-c:a", "mp2", "-f", "mp2"])
     assert probe(p).codec == "other"
+
+
+def test_probe_plain_pcm_24bit_wav_is_wav(tmp_path):
+    p = tmp_path / "p.wav"
+    soundfile.write(str(p), np.zeros((4800, 2), dtype="int32"), 48000, subtype="PCM_24", format="WAV")
+    info = probe(p)
+    assert (info.codec, info.container, info.bits) == ("pcm", "wav", 24)
+
+
+def test_probe_mp4_with_video_track_is_not_plain_mp4(tmp_path):
+    info = probe(make_music_video(tmp_path / "clip.mp4"))
+    assert info.codec == "aac" and info.container == "other"

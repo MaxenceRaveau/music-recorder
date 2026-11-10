@@ -9,10 +9,16 @@ from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4
 from mutagen.wave import WAVE
 
-from audiorec.convert.ffmpeg import JobCancelled, JobFailed, process_job
+import subprocess
+
+import imageio_ffmpeg
+from mutagen import id3
+
+from audiorec.convert.ffmpeg import JobCancelled, JobFailed, build_command, process_job
+from audiorec.convert.rules import EncodeParams
 from audiorec.convert.probe import probe
 from audiorec.convert.scan import Action, scan
-from tests.audio_files import make_audio
+from tests.audio_files import make_audio, make_music_video, wav_fmt_tag
 
 
 def _png() -> bytes:
@@ -133,3 +139,91 @@ def test_rejects_non_actionable_job(tmp_path):
     job.action = Action.DONE
     with pytest.raises(ValueError):
         process_job(job, "mp3")
+
+
+def _streams(path: Path) -> list[str]:
+    err = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-i", str(path)],
+                         capture_output=True, text=True).stderr
+    return [ln.strip() for ln in err.splitlines() if "Stream #" in ln]
+
+
+def test_24bit_wav_output_is_plain_pcm(tmp_path):
+    lib, out = tmp_path / "lib", tmp_path / "out"
+    make_audio(lib / "t.flac", codec_args=["-c:a", "flac", "-sample_fmt", "s32"], rate=96000)
+    [job] = scan(lib, out, "wav")
+    process_job(job, "wav")
+    assert wav_fmt_tag(job.dst) == 1
+    got = probe(job.dst)
+    assert (got.container, got.bits, got.rate) == ("wav", 24, 48000)
+    assert WAVE(job.dst).tags["TIT2"].text == ["T"]
+    assert not list(out.rglob("*.part"))
+
+
+def test_wavex_24bit_source_is_converted_to_plain_wav(tmp_path):
+    lib, out = tmp_path / "lib", tmp_path / "out"
+    make_audio(lib / "x.wav", codec_args=["-c:a", "pcm_s24le"], rate=48000)
+    assert wav_fmt_tag(lib / "x.wav") == 0xFFFE
+    [job] = scan(lib, out, "wav")
+    assert job.action == Action.CONVERT
+    process_job(job, "wav")
+    assert wav_fmt_tag(job.dst) == 1
+
+
+def test_aifc_source_is_converted_for_aiff_target(tmp_path):
+    lib, out = tmp_path / "lib", tmp_path / "out"
+    make_audio(lib / "c.aif", codec_args=["-c:a", "pcm_s16le", "-f", "aiff"])
+    assert (lib / "c.aif").read_bytes()[8:12] == b"AIFC"
+    [job] = scan(lib, out, "aiff")
+    assert job.action == Action.CONVERT
+    process_job(job, "aiff")
+    assert job.dst.read_bytes()[8:12] == b"AIFF"
+
+
+def test_build_command_maps_only_attached_pictures(tmp_path):
+    for target in ("mp3", "aac"):
+        cmd = build_command("ffmpeg", tmp_path / "a.mp4", tmp_path / "a.part", target,
+                            EncodeParams(44100, 2, 0))
+        assert "0:v:disp:attached_pic?" in cmd and "0:v:0?" not in cmd
+
+
+def test_music_video_to_mp3_drops_video(tmp_path):
+    lib, out = tmp_path / "lib", tmp_path / "out"
+    make_music_video(lib / "clip.mp4")
+    [job] = scan(lib, out, "mp3")
+    process_job(job, "mp3")
+    assert probe(job.dst).codec == "mp3"
+    assert not any("Video:" in s for s in _streams(job.dst))
+
+
+def test_music_video_to_aac_is_converted_without_video(tmp_path):
+    lib, out = tmp_path / "lib", tmp_path / "out"
+    make_music_video(lib / "clip.mp4")
+    [job] = scan(lib, out, "aac")
+    assert job.action == Action.CONVERT
+    process_job(job, "aac")
+    streams = _streams(job.dst)
+    assert any("Audio: aac" in s for s in streams)
+    assert not any("Video:" in s for s in streams)
+
+
+def test_wav_source_id3_tags_reach_wav_output(tmp_path):
+    lib, out = tmp_path / "lib", tmp_path / "out"
+    src = make_audio(lib / "hires.wav", codec_args=["-c:a", "pcm_s24le"], rate=96000)
+    w = WAVE(src)
+    w.add_tags()
+    w.tags.add(id3.TIT2(encoding=3, text=["T"]))
+    w.tags.add(id3.TPE1(encoding=3, text=["A"]))
+    w.save()
+    [job] = scan(lib, out, "wav")
+    process_job(job, "wav")
+    tags = WAVE(job.dst).tags
+    assert tags["TIT2"].text == ["T"] and tags["TPE1"].text == ["A"]
+
+
+def test_wma_source_tags_reach_wav_output(tmp_path):
+    lib, out = tmp_path / "lib", tmp_path / "out"
+    make_audio(lib / "w.wma", codec_args=["-c:a", "wmav2", "-b:a", "128k"])
+    [job] = scan(lib, out, "wav")
+    process_job(job, "wav")
+    tags = WAVE(job.dst).tags
+    assert tags["TIT2"].text == ["T"] and tags["TPE1"].text == ["A"]
