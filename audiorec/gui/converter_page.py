@@ -10,7 +10,7 @@ import shutil
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame, QGridLayout,
                                QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
@@ -63,16 +63,24 @@ class _ScanWorker(QObject):
 
 
 class _ConvertWorker(QObject):
+    started = Signal(object)            # Job (emitted from pool threads)
     result = Signal(object, str, str)   # Job, status, message (emitted from pool threads)
+    failed = Signal(str)                # the runner itself crashed
     finished = Signal(bool)             # True if not stopped
 
     def __init__(self, jobs: list[Job], target: str, workers: int | None) -> None:
         super().__init__()
-        self.runner = Runner(jobs, target, workers=workers, on_result=self.result.emit)
+        self.runner = Runner(jobs, target, workers=workers, on_result=self.result.emit,
+                             on_start=self.started.emit)
 
     @Slot()
     def run(self) -> None:
-        self.finished.emit(self.runner.run())
+        try:
+            completed = self.runner.run()
+        except Exception as e:  # noqa: BLE001 - a dead thread would leave the page converting
+            self.failed.emit(str(e) or type(e).__name__)
+            completed = False
+        self.finished.emit(completed)
 
 
 def _free_bytes(dest: Path) -> tuple[str, int] | None:
@@ -100,6 +108,11 @@ class ConverterPage(QWidget):
         self._stats: dict[str, list[int]] = {}  # group -> [convert, copy, done, bytes]
         self._counts = {"converted": 0, "copied": 0, "done": 0, "failed": 0}
         self._failures: list[str] = []
+        self._run_error: str | None = None
+        self._free: tuple[str, int] | None = None   # destination drive, read once per scan
+        # Unticking a folder emits itemChanged for every descendant: recompute once.
+        self._summary_timer = QTimer(self, singleShot=True, interval=0)
+        self._summary_timer.timeout.connect(lambda: self._update_summary())
         self._build_ui()
         self.library_edit.setText(str(settings.conv_library or ""))
         self.dest_edit.setText(str(settings.conv_dest or ""))
@@ -152,7 +165,7 @@ class ConverterPage(QWidget):
         self.scan_button.clicked.connect(self._on_scan)
         self.select_all.clicked.connect(lambda: self._set_all(Qt.Checked))
         self.select_none.clicked.connect(lambda: self._set_all(Qt.Unchecked))
-        self.tree.itemChanged.connect(self._update_summary)
+        self.tree.itemChanged.connect(self._summary_timer.start)
         self.convert_button.clicked.connect(self._on_convert)
         self.stop_button.clicked.connect(self._on_stop)
         self.copy_failures_button.clicked.connect(self._copy_failures)
@@ -312,6 +325,7 @@ class ConverterPage(QWidget):
         scanned = self._scanned
         self._clear_scan()
         self._jobs, self._scanned = jobs, scanned
+        self._free = _free_bytes(scanned[1])
         for j in jobs:
             s = self._stats.setdefault(j.group, [0, 0, 0, 0])
             if j.action in (Action.CONVERT, Action.COPY):
@@ -398,9 +412,8 @@ class ConverterPage(QWidget):
         if self._jobs is None:
             return
         text, warn = f"Estimated output: ~{size / GB:.1f} GB", False
-        free = _free_bytes(self._scanned[1])
-        if free is not None:
-            drive, nbytes = free
+        if self._free is not None:
+            drive, nbytes = self._free
             text += f" · Free on {drive}: {nbytes / GB:.0f} GB"
             if size > nbytes:
                 text, warn = text + " — not enough space", True
@@ -416,7 +429,7 @@ class ConverterPage(QWidget):
             return
         self._counts = {"converted": 0, "copied": 0, "failed": 0,
                         "done": sum(j.action == Action.DONE for j in chosen)}
-        self._failures = []
+        self._failures, self._run_error = [], None
         self.log.clear()
         self.right.setCurrentIndex(1)
         self.progress.setRange(0, len(todo))
@@ -427,12 +440,23 @@ class ConverterPage(QWidget):
             if j.action == Action.COLLISION:
                 self._on_result(j, "failed", j.note)
         worker = _ConvertWorker(todo, self._scanned[2], self._workers)
+        worker.started.connect(self._on_job_started)
         worker.result.connect(self._on_result)
+        worker.failed.connect(self._on_convert_failed)
         worker.finished.connect(self._on_convert_finished)
         self._start("converting", worker)
 
     def _rel(self, job: Job) -> str:
         return job.src.relative_to(self._scanned[0]).as_posix()
+
+    def _on_job_started(self, job: Job) -> None:
+        if self._mode == "converting" and self.stop_button.isEnabled():
+            self.current_label.setText(self._rel(job))
+
+    def _on_convert_failed(self, message: str) -> None:
+        self._run_error = message
+        self.log.addItem(f"Error  {message}")
+        self.log.item(self.log.count() - 1).setForeground(QBrush(QColor(FAIL_COLOR)))
 
     def _on_result(self, job: Job, status: str, message: str) -> None:
         self._counts[status] += 1
@@ -445,7 +469,6 @@ class ConverterPage(QWidget):
             self.log.addItem(f"{status.capitalize()}  {rel}")
         if job.action != Action.COLLISION:      # collisions are listed before the run
             self.progress.setValue(self.progress.value() + 1)
-            self.current_label.setText(rel)
         self.log.scrollToBottom()
         c = self._counts
         self.counts_label.setText(f"Converted {c['converted']} · Copied {c['copied']} · "
@@ -460,7 +483,9 @@ class ConverterPage(QWidget):
     def _on_convert_finished(self, completed: bool) -> None:
         self._finish_thread()
         failed = self._counts["failed"]
-        if not completed:
+        if self._run_error is not None:
+            status = f"Conversion stopped by an error: {self._run_error}"
+        elif not completed:
             status = "Stopped — finished files are kept."
         elif failed:
             status = f"Finished — {failed} failed."
@@ -470,7 +495,7 @@ class ConverterPage(QWidget):
         self._apply_controls()
 
     def _copy_failures(self) -> None:
-        QApplication.clipboard().setText("\n".join(self._failures))
+        self._set_clipboard("\n".join(self._failures))
 
     # ---- closing ----------------------------------------------------------
     def confirm_close(self) -> bool:
@@ -483,10 +508,11 @@ class ConverterPage(QWidget):
         if worker is None:
             return
         worker.finished.disconnect()
+        worker.failed.disconnect()
         if isinstance(worker, _ScanWorker):
-            worker.failed.disconnect()
             worker.cancel()
         else:
+            worker.started.disconnect()
             worker.result.disconnect()
             worker.runner.stop()
         self._finish_thread()
@@ -500,6 +526,9 @@ class ConverterPage(QWidget):
 
     def _error(self, title: str, text: str) -> None:
         QMessageBox.critical(self, title, text)
+
+    def _set_clipboard(self, text: str) -> None:
+        QApplication.clipboard().setText(text)
 
     def _pick_folder(self, title: str, start: Path | None) -> Path | None:
         folder = QFileDialog.getExistingDirectory(self, title, str(start or ""))

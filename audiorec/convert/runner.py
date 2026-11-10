@@ -17,11 +17,13 @@ from .scan import Action, Job
 
 class Runner:
     def __init__(self, jobs: list[Job], target: str, *, workers: int | None = None,
-                 on_result: Callable[[Job, str, str], None]) -> None:
+                 on_result: Callable[[Job, str, str], None],
+                 on_start: Callable[[Job], None] | None = None) -> None:
         self._jobs = jobs
         self._target = target
         self._workers = workers or max(1, (os.cpu_count() or 2) - 1)
         self._on_result = on_result
+        self._on_start = on_start
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._procs: set[subprocess.Popen] = set()
@@ -45,6 +47,8 @@ class Runner:
     def _one(self, job: Job) -> None:
         if self._stop.is_set():
             return
+        if self._on_start is not None:
+            self._on_start(job)
         mine: list[subprocess.Popen] = []
 
         def register(p: subprocess.Popen | None) -> None:

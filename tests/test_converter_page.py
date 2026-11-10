@@ -2,9 +2,13 @@
 through the page's wrapper methods, scan and convert run on their threads."""
 from __future__ import annotations
 
+import threading
+
 import pytest
 from PySide6.QtCore import QSettings, Qt
 
+from audiorec.convert import runner as runner_mod
+from audiorec.convert.scan import Action, Job
 from audiorec.gui.converter_page import ConverterPage
 from audiorec.gui.settings import AppSettings
 from tests.audio_files import make_audio
@@ -28,6 +32,7 @@ def make_page(qtbot, tmp_path):
         page.calls = []
         page._error = lambda title, text: page.calls.append(("error", text))
         page._confirm = lambda title, text: page.calls.append(("confirm", text)) or True
+        page._set_clipboard = lambda text: page.calls.append(("clipboard", text))
         pages.append(page)
         return page
 
@@ -89,12 +94,12 @@ def test_scan_fills_tree_all_checked_and_summary(qtbot, page_with_library):
 def test_untick_folder_updates_summary(qtbot, page_with_library):
     page = scanned(qtbot, page_with_library)
     top_items(page)["Techno"].setCheckState(0, Qt.Unchecked)
-    assert page.convert_button.text() == "Convert 2 files"
+    qtbot.waitUntil(lambda: page.convert_button.text() == "Convert 2 files")
     assert page.summary_convert.text() == "1"
     house = top_items(page)["House"]
     house.child(0).setCheckState(0, Qt.Unchecked)       # loose tracks of House
     assert house.checkState(0) == Qt.PartiallyChecked
-    assert page.convert_button.text() == "Convert 1 files"
+    qtbot.waitUntil(lambda: page.convert_button.text() == "Convert 1 files")
     page.select_none.click()
     assert not page.convert_button.isEnabled()
     assert page.summary_convert.text() == "0" and page.summary_copy.text() == "0"
@@ -141,12 +146,63 @@ def test_failures_and_collisions_reported_and_copied(qtbot, make_page, tmp_path)
     assert page.counts_label.text() == "Converted 0 · Copied 1 · Already done 0 · Failed 2"
     assert page.copy_failures_button.isEnabled()
     page.copy_failures_button.click()
-    from PySide6.QtWidgets import QApplication
-    lines = QApplication.clipboard().text().splitlines()
+    kind, text = page.calls[-1]
+    assert kind == "clipboard"
+    lines = text.splitlines()
     assert len(lines) == 2
     assert any(l.startswith(str(lib / "Song.flac") + " — same output name as Song.mp3")
                for l in lines)
     assert any(l.startswith(str(lib / "bad.flac") + " — ") for l in lines)
+
+
+def test_untick_parent_recomputes_summary_once(qtbot, make_page, tmp_path):
+    page = make_page()
+    runs = []
+    original = page._update_summary
+    page._update_summary = lambda: runs.append(1) or original()
+    lib, out = tmp_path / "lib", tmp_path / "out"
+    jobs = [Job(src=lib / f"Genre/Album{i:03d}/t.flac", dst=out / f"Genre/Album{i:03d}/t.mp3",
+                group=f"Genre/Album{i:03d}", action=Action.CONVERT, info=None, est_bytes=1000)
+            for i in range(200)]
+    page._scanned = (lib, out, "mp3")
+    page._on_scan_finished(jobs)
+    qtbot.waitUntil(lambda: page.convert_button.text() == "Convert 200 files")
+    runs.clear()
+    page.tree.topLevelItem(0).setCheckState(0, Qt.Unchecked)
+    qtbot.waitUntil(lambda: page.convert_button.text() == "Convert 0 files")
+    qtbot.wait(50)
+    assert len(runs) == 1
+
+
+def test_current_label_shows_file_being_processed(qtbot, page_with_library, monkeypatch):
+    release = threading.Event()
+
+    def slow_job(job, target, *, register, cancelled):
+        release.wait(10)
+
+    monkeypatch.setattr(runner_mod, "process_job", slow_job)
+    page = scanned(qtbot, page_with_library)
+    page._workers = 1
+    page.convert_button.click()
+    qtbot.waitUntil(lambda: page.current_label.text() not in ("", "Starting…"))
+    first = next(j for j in page._jobs if j.action in (Action.CONVERT, Action.COPY))
+    assert page.current_label.text() == first.src.relative_to(page._scanned[0]).as_posix()
+    assert page.log.count() == 0                        # still running, nothing finished
+    release.set()
+    qtbot.waitUntil(lambda: page._thread is None, timeout=10000)
+
+
+def test_runner_crash_does_not_leave_page_converting(qtbot, page_with_library, monkeypatch):
+    def boom(self):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(runner_mod.Runner, "run", boom)
+    page = scanned(qtbot, page_with_library)
+    page.convert_button.click()
+    qtbot.waitUntil(lambda: page._thread is None, timeout=10000)
+    assert any("boom" in page.log.item(i).text() for i in range(page.log.count()))
+    assert "boom" in page.current_label.text()
+    assert page.scan_button.isEnabled() and page.confirm_close() is True
 
 
 def test_rescan_after_convert_shows_all_done(qtbot, page_with_library):

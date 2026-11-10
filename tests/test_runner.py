@@ -87,3 +87,21 @@ def test_stop_keeps_finished_and_leaves_no_part(tmp_path):
     assert len(results) == 1
     assert len([p for p in out.rglob("*") if p.is_file()]) == 1
     assert not list(out.rglob("*.part"))
+
+
+def test_on_start_fires_once_per_started_job(tmp_path):
+    lib, out = tmp_path / "lib", tmp_path / "out"
+    for n in "abc":
+        make_audio(lib / f"{n}.flac", codec_args=FLAC, seconds=0.5)
+    jobs = _jobs(lib, out)
+    started = []
+    Runner(jobs, "mp3", workers=2, on_result=lambda j, s, m: None,
+           on_start=started.append).run()
+    assert sorted(j.src.name for j in started) == ["a.flac", "b.flac", "c.flac"]
+
+    started.clear()
+    holder = {}
+    holder["r"] = Runner(_jobs(lib, tmp_path / "out2"), "mp3", workers=1,
+                         on_result=lambda j, s, m: holder["r"].stop(), on_start=started.append)
+    holder["r"].run()
+    assert len(started) == 1                # jobs skipped after stop never start
