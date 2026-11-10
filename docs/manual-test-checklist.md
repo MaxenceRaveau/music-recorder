@@ -20,3 +20,5 @@ Run `python recorder_gui.py` and play a real song (for example in Spotify).
 - [ ] 16. Record while converting a large folder: the waveform keeps drawing, the meter moves, and the saved recording has no dropout or glitch.
 - [ ] 17. Quit while recording and converting: the recording question comes first, then the conversion question. Answer No to either and both keep running.
 - [ ] 18. Import the destination folder into Rekordbox: tracks, folders and tags show, and a converted track plays. If a CDJ-2000 is available, copy to USB and play one track on it.
+- [ ] 19. Convert a 24-bit source (for example a 96 kHz/24-bit FLAC or WAV) with WAV as the format; play the output on a CDJ-2000 (or, without one, import it into Rekordbox): it plays and its title and artist show.
+- [ ] 20. Convert a few tracks with AIFF as the format; play one on a CDJ-2000 (or import into Rekordbox): it plays and its title and artist show.
