@@ -235,6 +235,15 @@ def test_close_while_converting_asks_and_stops(qtbot, make_page, tmp_path):
     assert len(list(out.rglob("*.mp3"))) < 3
 
 
+def test_close_while_scanning_does_not_ask(qtbot, page_with_library):
+    page = page_with_library
+    page.scan_button.click()
+    assert page._mode == "scanning"
+    assert page.confirm_close() is True and page.calls == []
+    page.shutdown()
+    assert page._thread is None
+
+
 def test_format_and_paths_remembered(qtbot, make_page, tmp_path):
     page = make_page()
     page.library_edit.setText(str(tmp_path / "music"))

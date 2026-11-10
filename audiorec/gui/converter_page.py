@@ -499,8 +499,9 @@ class ConverterPage(QWidget):
 
     # ---- closing ----------------------------------------------------------
     def confirm_close(self) -> bool:
-        """Ask whether quitting is OK. No side effects."""
-        return self._mode == "idle" or self._confirm("Quit Audio Recorder", CLOSE_MESSAGE)
+        """Ask whether quitting is OK. No side effects. A scan is harmless to
+        cancel (shutdown does it), so only a running conversion asks."""
+        return self._mode != "converting" or self._confirm("Quit Audio Recorder", CLOSE_MESSAGE)
 
     def shutdown(self) -> None:
         """Stop the scan or conversion and wait for its thread."""
