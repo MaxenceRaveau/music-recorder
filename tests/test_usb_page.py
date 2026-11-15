@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QDialogButtonBox
 
 from audiorec.gui.usb_page import EraseDialog, UsbPage
 from audiorec.usb import progress
-from audiorec.usb.disks import UsbDisk
+from audiorec.usb.disks import UsbDisk, clean_label
 
 STICK = UsbDisk(number=3, model="SanDisk Ultra", serial="AA11", size=64_000_000_000,
                 letters=("E",), label="sandisk", filesystem="exFAT")
@@ -63,7 +63,6 @@ def make_page(qtbot, tmp_path):
         page.listed = listed
         page.calls = []
         page._ask_erase = lambda disk: page.calls.append(("ask", disk)) or ask_erase
-        page._error = lambda title, text: page.calls.append(("error", text))
         page._confirm = lambda title, text: page.calls.append(("confirm", text)) or True
         pages.append(page)
         page.refresh()
@@ -243,3 +242,50 @@ def test_close_while_formatting_asks(qtbot, make_page):
     page.shutdown()
     qtbot.wait(300)
     assert launch.calls == calls_before
+
+
+def test_has_no_unused_error_dialog():
+    assert not hasattr(UsbPage, "_error")
+
+
+def test_progress_file_deleted_after_final_read(qtbot, make_page):
+    launch = FakeLaunch(exited=True, code=0)
+    done = "E: is ready — FAT32, 64.0 GB, label SANDISK"
+    start = FakeStart(launch, [{"fraction": 1.0, "message": done, "done": True}])
+    page = make_page(start=start)
+    page.format_button.click()
+    qtbot.waitUntil(lambda: page.status_label.text() == done)
+    (req,) = start.requests
+    assert not req.progress_path.exists()
+
+
+def test_unreadable_progress_file_skips_the_tick(qtbot, make_page, monkeypatch):
+    launch = FakeLaunch(exited=False)
+    start = FakeStart(launch, [{"fraction": 0.5, "message": "Writing FAT32…"}])
+    page = make_page(start=start)
+    real_read, failures = progress.read, []
+
+    def flaky_read(path):
+        if len(failures) < 3:
+            failures.append(1)
+            raise PermissionError("The process cannot access the file")
+        return real_read(path)
+
+    monkeypatch.setattr(progress, "read", flaky_read)
+    page.format_button.click()
+    qtbot.waitUntil(lambda: page.status_label.text() == "Writing FAT32…")
+    assert len(failures) == 3 and page._launch is launch
+    launch.exited = True
+    qtbot.waitUntil(lambda: page._launch is None)
+
+
+@pytest.mark.parametrize("typed", ["Fête", "Été à Paris", "ÿ", "µ"])
+def test_label_sent_is_what_the_helper_will_write(qtbot, make_page, typed):
+    start = FakeStart(None)
+    page = make_page(start=start)
+    page.label_edit.setText(typed)
+    page.label_edit.editingFinished.emit()
+    shown = page.label_edit.text()
+    page.format_button.click()
+    (req,) = start.requests
+    assert req.label == shown == clean_label(typed) == clean_label(req.label)

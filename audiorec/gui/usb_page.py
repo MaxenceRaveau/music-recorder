@@ -254,13 +254,20 @@ class UsbPage(QWidget):
         except OSError as e:
             exited, wait_error = True, str(e.strerror or e)
         # Read after checking for exit, so the last lines written before exit count.
-        state = progress.read(self._progress_path)
+        try:
+            state = progress.read(self._progress_path)
+        except OSError:
+            return  # e.g. briefly locked by antivirus: try again next tick
         self.progress.setValue(round(max(0.0, min(1.0, state.fraction)) * BAR_MAX))
         if state.message and not exited:
             self._set_status(state.message)
         if not exited:
             return
         self._timer.stop()
+        try:
+            self._progress_path.unlink(missing_ok=True)
+        except OSError:
+            pass  # a leftover file in the app's own folder is harmless
         if state.done:
             self.progress.setValue(BAR_MAX)
             self._set_status(state.message)
@@ -295,6 +302,3 @@ class UsbPage(QWidget):
         answer = QMessageBox.question(self, title, text, QMessageBox.Yes | QMessageBox.No,
                                       QMessageBox.No)
         return answer == QMessageBox.Yes
-
-    def _error(self, title: str, text: str) -> None:
-        QMessageBox.critical(self, title, text)
