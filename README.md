@@ -58,8 +58,8 @@ folders you don't want, then Convert. The folder tree is kept.
 
 ## USB Formatter
 
-The USB Formatter page (sidebar) erases a USB stick and formats it as one
-FAT32 partition, the format CDJ-2000 decks and Rekordbox USB exports read.
+The USB Formatter page (sidebar) erases a USB stick and writes one MBR partition
+with FAT32, the format CDJ-2000 decks and Rekordbox USB exports read.
 Pick the stick, set a label (optional), then Format.
 
 - The whole stick is erased. Only USB sticks are listed; internal and system
