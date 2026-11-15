@@ -4,3 +4,4 @@ recordings/
 *.part
 .pytest_cache/
 docs/superpowers/
+.venv/

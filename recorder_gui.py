@@ -17,6 +17,8 @@ from pathlib import Path
 from PySide6.QtCore import QLockFile, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from audiorec.gui.app_window import AppWindow
+from audiorec.gui.converter_page import ConverterPage
 from audiorec.gui.main_window import MainWindow, PyAudioDeviceProvider
 from audiorec.gui.settings import AppSettings
 from audiorec.session import default_root
@@ -62,7 +64,9 @@ def main() -> int:
         return 0
     provider = PyAudioDeviceProvider()
     app.aboutToQuit.connect(provider.close)
-    window = MainWindow(AppSettings(), default_root(), provider)
+    settings = AppSettings()
+    recorder = MainWindow(settings, default_root(), provider)
+    window = AppWindow(recorder, [("Converter", ConverterPage(settings))])
     window.show()
     QTimer.singleShot(0, window.check_leftovers)
     code = app.exec()
