@@ -16,6 +16,8 @@ uv sync
 uv run recorder_gui.py
 ```
 
+or `make run`.
+
 Optional desktop shortcut that opens the window without a console:
 
 ```
