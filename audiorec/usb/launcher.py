@@ -43,7 +43,11 @@ def helper_command(req: FormatRequest, python: str = sys.executable) -> tuple[st
     py = Path(python)
     pythonw = py.with_name("pythonw.exe")
     exe = pythonw if pythonw.exists() else py
-    params = subprocess.list2cmdline(["-m", "audiorec.usb.helper", *req.to_args()])
+    # -E -s: ignore PYTHON* variables and user site-packages, which anyone
+    # running as the user could plant. Not -I: that would also drop the
+    # working directory (the project root) from sys.path, breaking -m.
+    params = subprocess.list2cmdline(["-E", "-s", "-m", "audiorec.usb.helper",
+                                      *req.to_args()])
     return str(exe), params
 
 

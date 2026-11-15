@@ -26,6 +26,9 @@ from .disks import UsbDisk, clean_label
 from .fat32 import SECTOR, compute_layout, write_volume
 
 CHANGED = "The selected stick changed. Nothing was erased."
+TOO_SMALL = "This stick is too small for FAT32. Nothing was erased."
+NO_LETTER = "Formatted, but Windows did not assign a drive letter"
+_ALIGN = 1024 * 1024  # the partition starts 1 MiB in
 _WRITE_START, _WRITE_END = 0.1, 0.95
 
 
@@ -95,18 +98,29 @@ def run(req: FormatRequest, ops: DiskOps, *, sectors_per_cluster: int | None = N
             report(error=CHANGED)
             return 1
 
+        label = clean_label(req.label)
+        volume_id = time.time_ns() & 0xFFFFFFFF
+        # Refuse a stick too small for FAT32 before erasing it, sizing the
+        # partition as Windows will create it (whole disk after the 1 MiB gap).
+        try:
+            compute_layout((req.size - _ALIGN) // SECTOR, hidden_sectors=_ALIGN // SECTOR,
+                           label=label, volume_id=volume_id,
+                           sectors_per_cluster=sectors_per_cluster)
+        except ValueError:
+            report(error=TOO_SMALL)
+            return 1
+
         report(fraction=0.05, message="Partitioning…")
         n = req.disk_number
         offset, size, part = ops.repartition(n, req.serial, req.size)
         if (offset <= 0 or size <= 0 or offset % SECTOR or size % SECTOR
                 or offset + size > req.size):
             raise RuntimeError(f"Unexpected partition (offset {offset}, size {size})")
-        label = clean_label(req.label)
         layout = compute_layout(
             size // SECTOR,
             hidden_sectors=offset // SECTOR,
             label=label,
-            volume_id=time.time_ns() & 0xFFFFFFFF,
+            volume_id=volume_id,
             sectors_per_cluster=sectors_per_cluster,
         )
 
@@ -125,7 +139,13 @@ def run(req: FormatRequest, ops: DiskOps, *, sectors_per_cluster: int | None = N
             write_volume(dev, layout, progress=on_write)
 
         report(fraction=_WRITE_END, message="Finishing…")
-        letter = ops.remount(n, part)
+        try:
+            letter = ops.remount(n, part)
+        except Exception as e:
+            # FAT32 is fully written: the stick is usable, only unmounted.
+            report(fraction=1.0, done=True,
+                   message=f"{NO_LETTER}: {str(e) or type(e).__name__}")
+            return 0
         report(
             fraction=1.0,
             done=True,

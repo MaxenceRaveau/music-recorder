@@ -25,7 +25,7 @@ def _request(tmp_path, *, serial="A", size=DISK_SIZE, label="rekord*box"):
 
 class FakeOps:
     def __init__(self, image: Path, disks, *, partition=(MIB, 40 * MIB, 1), letter="E",
-                 repartition_error=None, open_error=None, write_error=None):
+                 repartition_error=None, open_error=None, write_error=None, remount_error=None):
         self.image = image
         self.disks = disks
         self.partition = partition
@@ -33,6 +33,7 @@ class FakeOps:
         self.repartition_error = repartition_error
         self.open_error = open_error
         self.write_error = write_error
+        self.remount_error = remount_error
         self.repartitioned = []
         self.opened = []
         self.remounted = []
@@ -59,6 +60,8 @@ class FakeOps:
 
     def remount(self, disk_number, partition_number):
         self.remounted.append((disk_number, partition_number))
+        if self.remount_error:
+            raise self.remount_error
         return self.letter
 
 
@@ -262,3 +265,79 @@ def test_powershell_error_trimmed():
     )
     assert first_error_line(stderr) == "The selected stick changed. Nothing was erased."
     assert first_error_line("\n  \n") == ""
+
+
+@pytest.mark.parametrize("size", [2 * MIB, 128 * MIB, 256 * MIB])
+def test_too_small_stick_refused_before_erasing(tmp_path, size):
+    image = _image(tmp_path)
+    ops = FakeOps(image, [_disk(size=size)])
+    req = _request(tmp_path, size=size)
+    assert helper.run(req, ops) == 1
+    assert progress.read(req.progress_path).error == \
+        "This stick is too small for FAT32. Nothing was erased."
+    assert ops.repartitioned == [] and ops.opened == [] and _untouched(image)
+
+
+def test_remount_failure_after_writing_is_done_with_warning(tmp_path):
+    ops = FakeOps(_image(tmp_path), [_disk()],
+                  remount_error=RuntimeError("Windows did not answer in time"))
+    req = _request(tmp_path)
+    assert helper.run(req, ops, sectors_per_cluster=1) == 0
+    state = progress.read(req.progress_path)
+    assert state.done and state.error is None
+    assert state.message == ("Formatted, but Windows did not assign a drive letter: "
+                             "Windows did not answer in time")
+
+
+def _fake_powershell(monkeypatch, *, timeout=False, stdout="ok\n"):
+    import subprocess
+
+    from audiorec.usb import winops
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if timeout:
+            raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(winops.subprocess, "run", fake_run)
+    return calls
+
+
+def test_powershell_scripts_set_utf8_and_import_storage_from_pshome(monkeypatch):
+    from audiorec.usb import winops
+
+    calls = _fake_powershell(monkeypatch)
+    assert winops._ps("Get-Disk") == "ok"
+    script = calls[0][-1]
+    lines = script.splitlines()
+    assert lines[0] == "[Console]::OutputEncoding = [Text.Encoding]::UTF8"
+    assert r'Import-Module "$PSHOME\Modules\Storage"' in lines[:3]
+    assert script.rstrip().endswith("Get-Disk")
+
+
+def test_powershell_timeout_is_not_retried(monkeypatch):
+    from audiorec.usb import winops
+
+    calls = _fake_powershell(monkeypatch, timeout=True)
+    monkeypatch.setattr(winops.time, "sleep", lambda s: None)
+    with pytest.raises(winops.PowerShellTimeout):
+        winops._retry(lambda: winops._ps("Get-Partition"))
+    assert len(calls) == 1
+
+
+def test_other_powershell_errors_are_retried(monkeypatch):
+    from audiorec.usb import winops
+
+    monkeypatch.setattr(winops.time, "sleep", lambda s: None)
+    attempts = []
+
+    def flaky():
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise RuntimeError("not mounted yet")
+        return "done"
+
+    assert winops._retry(flaky) == "done" and len(attempts) == 3

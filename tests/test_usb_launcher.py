@@ -21,7 +21,9 @@ def test_helper_command_uses_pythonw_and_quotes(tmp_path):
     req = _req(tmp_path)
     exe, params = launcher.helper_command(req, python=str(tmp_path / "python.exe"))
     assert exe.endswith("pythonw.exe")
-    assert params.startswith("-m audiorec.usb.helper")
+    # -E -s: no PYTHON* env vars, no user site-packages in the elevated helper.
+    assert params.startswith("-E -s -m audiorec.usb.helper ")
+    assert "-I" not in params.split()  # would drop the project root from sys.path
     assert '"--label=MY STICK"' in params
     assert f'"--progress={req.progress_path}"' in params
     assert "--disk=3" in params
@@ -46,7 +48,7 @@ def test_start_passes_command_and_root(tmp_path):
         return sentinel
 
     assert start(_req(tmp_path), shell_execute=fake) is sentinel
-    assert seen[0][1].startswith("-m audiorec.usb.helper")
+    assert seen[0][1].startswith("-E -s -m audiorec.usb.helper ")
     assert Path(seen[0][2]) == launcher.PROJECT_ROOT
 
 

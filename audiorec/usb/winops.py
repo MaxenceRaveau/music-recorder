@@ -44,6 +44,14 @@ _MBR_FAT32_LBA = 12  # 0x0C
 _NOT_THIS_STICK = "The volume is not on the selected stick. Nothing was written."
 
 _PS_TIMEOUT = 300
+# Every script: UTF-8 output so localized errors decode, stop on any error,
+# and the Storage cmdlets loaded from Windows' own module folder, so a module
+# planted in the user's PSModulePath cannot stand in for them while elevated.
+_PS_PREAMBLE = (
+    "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n"
+    "$ErrorActionPreference = 'Stop'\n"
+    'Import-Module "$PSHOME\\Modules\\Storage"\n'
+)
 # Windows may still be mounting the new partition when we ask for it.
 _RETRIES = 10
 _RETRY_DELAY = 1.0
@@ -97,12 +105,16 @@ def check_extents(
         raise OSError(_NOT_THIS_STICK)
 
 
+class PowerShellTimeout(Exception):
+    """PowerShell did not answer. Not retried: waiting again won't help."""
+
+
 def _ps(script: str, env: dict[str, str] | None = None) -> str:
     """Run a script; return the last non-empty line of its output."""
     try:
         proc = subprocess.run(
             [POWERSHELL, "-NoProfile", "-NonInteractive", "-Command",
-             "$ErrorActionPreference = 'Stop'\n" + script],
+             _PS_PREAMBLE + script],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -112,7 +124,7 @@ def _ps(script: str, env: dict[str, str] | None = None) -> str:
             env={**os.environ, **env} if env else None,
         )
     except subprocess.TimeoutExpired:
-        raise RuntimeError("Windows did not answer in time") from None
+        raise PowerShellTimeout("Windows did not answer in time") from None
     if proc.returncode != 0:
         raise RuntimeError(first_error_line(proc.stderr) or f"PowerShell failed ({proc.returncode})")
     lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
@@ -149,7 +161,7 @@ def _open_handle(path: str) -> int:
 
 def _retry(action):
     # RuntimeError covers PowerShell lookups failing while Windows is still
-    # mounting the new partition.
+    # mounting the new partition. PowerShellTimeout is neither: it propagates.
     for attempt in range(_RETRIES):
         try:
             return action()
@@ -259,5 +271,6 @@ if (-not [string]$p.DriveLetter -or [int][char]$p.DriveLetter -eq 0) {{
 """)
         letter = out.strip().upper()
         if len(letter) != 1 or not letter.isalpha():
-            raise RuntimeError("Formatted, but Windows did not assign a drive letter")
+            # helper.run reports this as "Formatted, but ... drive letter: <reason>".
+            raise RuntimeError("Windows returned no drive letter")
         return letter

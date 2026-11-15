@@ -124,6 +124,13 @@ def test_clean_label_drops_control_and_non_cp437_characters():
     assert clean_label("\u4e2dx") == "X"
 
 
+def test_list_script_imports_storage_from_pshome():
+    # The helper runs this elevated to re-identify the stick.
+    from audiorec.usb.disks import LIST_SCRIPT
+
+    assert r'Import-Module "$PSHOME\Modules\Storage"' in LIST_SCRIPT.split("Get-Disk")[0]
+
+
 def test_list_usb_disks_uses_absolute_powershell_and_reports_timeout():
     from audiorec.usb.disks import POWERSHELL
 
@@ -138,3 +145,14 @@ def test_list_usb_disks_uses_absolute_powershell_and_reports_timeout():
     assert seen["cmd"][0] == POWERSHELL
     assert POWERSHELL.lower().endswith("powershell.exe")
     assert seen["kw"]["errors"] == "replace"
+
+
+@pytest.mark.parametrize("raw,out", [
+    ("Fête", "FTE"),                  # Ê is not in cp437
+    ("Été à Paris", "ÉTÉ  PARIS"),    # É is, À is not
+    ("ÿ", "REKORDBOX"),               # Ÿ is not
+    ("µ", "REKORDBOX"),               # upper-cases to Greek capital Mu
+])
+def test_clean_label_upper_cases_before_filtering(raw, out):
+    assert clean_label(raw) == out
+    assert clean_label(clean_label(raw)) == clean_label(raw)

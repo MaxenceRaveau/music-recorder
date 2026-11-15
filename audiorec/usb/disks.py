@@ -33,6 +33,7 @@ _DEFAULT_LABEL = "REKORDBOX"
 LIST_SCRIPT = r"""
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
+Import-Module "$PSHOME\Modules\Storage"
 $disks = Get-Disk | Select-Object Number, FriendlyName, SerialNumber, Size, IsSystem, IsBoot,
     @{Name='BusType'; Expression={ $_.BusType.ToString() }}
 $parts = Get-Partition | Select-Object DiskNumber, @{Name='DriveLetter'; Expression={ [string]$_.DriveLetter }}
@@ -74,8 +75,10 @@ def _label_char_ok(c: str) -> bool:
 
 
 def clean_label(text: str) -> str:
-    kept = "".join(c for c in text if _label_char_ok(c)).upper()
-    kept = "".join(c for c in kept if c not in _FORBIDDEN_LABEL_CHARS)
+    # Upper-case first: some characters (ê, ÿ, µ) are in cp437 but their
+    # upper case is not, and the result must be stable when cleaned again.
+    kept = "".join(c for c in text.upper()
+                   if _label_char_ok(c) and c not in _FORBIDDEN_LABEL_CHARS)
     kept = kept[:_MAX_LABEL].strip()
     return kept or _DEFAULT_LABEL
 
