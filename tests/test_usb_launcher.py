@@ -64,3 +64,35 @@ def test_launch_failure_raises(tmp_path):
 
 def test_shellexecuteinfo_size():
     assert ctypes.sizeof(launcher._SHELLEXECUTEINFOW) == (112 if ctypes.sizeof(ctypes.c_void_p) == 8 else 60)
+
+
+class _FakeShell32:
+    def __init__(self, ok):
+        self.ok = ok
+
+    def ShellExecuteExW(self, ref):
+        return self.ok
+
+
+@pytest.mark.parametrize("err, expect_none", [(1223, True), (2, False)])
+def test_runas_maps_error_codes(monkeypatch, err, expect_none):
+    monkeypatch.setattr(launcher, "_shell32", _FakeShell32(0))
+    monkeypatch.setattr(launcher.ctypes, "get_last_error", lambda: err)
+    if expect_none:
+        assert launcher._shell_execute_runas("x.exe", "", ".") is None
+    else:
+        with pytest.raises(OSError):
+            launcher._shell_execute_runas("x.exe", "", ".")
+
+
+def test_wait_failed_raises(monkeypatch):
+    class K:
+        def WaitForSingleObject(self, h, t):
+            return launcher.WAIT_FAILED
+
+    monkeypatch.setattr(launcher, "_kernel32", K())
+    monkeypatch.setattr(launcher.ctypes, "get_last_error", lambda: 6)
+    p = launcher._ProcessLaunch(1)
+    with pytest.raises(OSError):
+        p.wait(10)
+    p._handle = None

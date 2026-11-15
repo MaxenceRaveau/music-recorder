@@ -25,6 +25,7 @@ SEE_MASK_NOCLOSEPROCESS = 0x00000040
 SW_HIDE = 0
 WAIT_OBJECT_0 = 0
 STILL_ACTIVE = 259
+WAIT_FAILED = 0xFFFFFFFF
 
 
 class Launch(Protocol):
@@ -33,6 +34,8 @@ class Launch(Protocol):
         ...
 
     def exit_code(self) -> int | None: ...
+
+    def close(self) -> None: ...
 
 
 def helper_command(req: FormatRequest, python: str = sys.executable) -> tuple[str, str]:
@@ -64,6 +67,19 @@ class _SHELLEXECUTEINFOW(ctypes.Structure):
     ]
 
 
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+_kernel32.WaitForSingleObject.restype = wintypes.DWORD
+_kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+_kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+_kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+_kernel32.CloseHandle.restype = wintypes.BOOL
+
+_shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+_shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(_SHELLEXECUTEINFOW)]
+_shell32.ShellExecuteExW.restype = wintypes.BOOL
+
+
 class _ProcessLaunch:
     def __init__(self, handle: int) -> None:
         self._handle: int | None = handle
@@ -71,25 +87,22 @@ class _ProcessLaunch:
     def wait(self, timeout_ms: int) -> bool:
         if self._handle is None:
             return True
-        k32 = ctypes.windll.kernel32
-        k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-        k32.WaitForSingleObject.restype = wintypes.DWORD
-        return k32.WaitForSingleObject(self._handle, timeout_ms) == WAIT_OBJECT_0
+        result = _kernel32.WaitForSingleObject(self._handle, timeout_ms)
+        if result == WAIT_FAILED:
+            raise ctypes.WinError(ctypes.get_last_error())
+        return result == WAIT_OBJECT_0
 
     def exit_code(self) -> int | None:
         if self._handle is None:
             return None
-        k32 = ctypes.windll.kernel32
-        k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
         code = wintypes.DWORD()
-        if not k32.GetExitCodeProcess(self._handle, ctypes.byref(code)):
+        if not _kernel32.GetExitCodeProcess(self._handle, ctypes.byref(code)):
             return None
         return None if code.value == STILL_ACTIVE else code.value
 
     def close(self) -> None:
         if self._handle is not None:
-            ctypes.windll.kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-            ctypes.windll.kernel32.CloseHandle(self._handle)
+            _kernel32.CloseHandle(self._handle)
             self._handle = None
 
     def __del__(self) -> None:
@@ -108,11 +121,8 @@ def _shell_execute_runas(exe: str, params: str, cwd: str) -> Launch | None:
     info.lpParameters = params
     info.lpDirectory = cwd
     info.nShow = SW_HIDE
-    shell32 = ctypes.windll.shell32
-    shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(_SHELLEXECUTEINFOW)]
-    shell32.ShellExecuteExW.restype = wintypes.BOOL
-    if not shell32.ShellExecuteExW(ctypes.byref(info)):
-        err = ctypes.GetLastError()
+    if not _shell32.ShellExecuteExW(ctypes.byref(info)):
+        err = ctypes.get_last_error()
         if err == ERROR_CANCELLED:
             return None
         raise ctypes.WinError(err)
