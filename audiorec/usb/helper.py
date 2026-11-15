@@ -6,9 +6,11 @@ through the progress file; nothing else is shared between the two.
 Before touching anything the helper lists the safe USB disks afresh and
 requires the requested disk number to still carry the same serial and size.
 A stick swapped, unplugged, or no longer qualifying as safe since the user
-picked it is refused with nothing written. Disk access goes through DiskOps
-so that every step here is tested on image files; the Windows implementation
-lives in winops.
+picked it is refused with nothing written. Disk numbers can be reused, so
+DiskOps re-checks serial and size in the same step that erases, and checks the
+opened volume is exactly the new partition before writing. Disk access goes
+through DiskOps so that every step here is tested on image files; the Windows
+implementation lives in winops.
 """
 from __future__ import annotations
 
@@ -61,11 +63,18 @@ class FormatRequest:
 class DiskOps(Protocol):
     def list_disks(self) -> list[UsbDisk]: ...
 
-    def repartition(self, disk_number: int) -> tuple[int, int]: ...
+    def repartition(self, disk_number: int, serial: str, size: int) -> tuple[int, int, int]:
+        """Erase and repartition, but only if the disk still has this serial and
+        size; returns (offset, size, partition number) of the new partition."""
+        ...
 
-    def open_volume(self, disk_number: int) -> ContextManager[BinaryIO]: ...
+    def open_volume(
+        self, disk_number: int, partition_number: int, offset: int, size: int
+    ) -> ContextManager[BinaryIO]:
+        """The locked, dismounted volume, verified to be exactly that extent."""
+        ...
 
-    def remount(self, disk_number: int) -> str: ...
+    def remount(self, disk_number: int, partition_number: int) -> str: ...
 
 
 def _still_same_disk(req: FormatRequest, disks: list[UsbDisk]) -> bool:
@@ -87,8 +96,10 @@ def run(req: FormatRequest, ops: DiskOps, *, sectors_per_cluster: int | None = N
             return 1
 
         report(fraction=0.05, message="Partitioning…")
-        offset, size = ops.repartition(req.disk_number)
-        if offset <= 0 or size <= 0 or offset % SECTOR or size % SECTOR:
+        n = req.disk_number
+        offset, size, part = ops.repartition(n, req.serial, req.size)
+        if (offset <= 0 or size <= 0 or offset % SECTOR or size % SECTOR
+                or offset + size > req.size):
             raise RuntimeError(f"Unexpected partition (offset {offset}, size {size})")
         label = clean_label(req.label)
         layout = compute_layout(
@@ -110,11 +121,11 @@ def run(req: FormatRequest, ops: DiskOps, *, sectors_per_cluster: int | None = N
                 last = fraction
                 report(fraction=fraction, message="Writing FAT32…")
 
-        with ops.open_volume(req.disk_number) as dev:
+        with ops.open_volume(n, part, offset, size) as dev:
             write_volume(dev, layout, progress=on_write)
 
         report(fraction=_WRITE_END, message="Finishing…")
-        letter = ops.remount(req.disk_number)
+        letter = ops.remount(n, part)
         report(
             fraction=1.0,
             done=True,
@@ -124,8 +135,8 @@ def run(req: FormatRequest, ops: DiskOps, *, sectors_per_cluster: int | None = N
     except Exception as e:
         try:
             report(error=str(e) or type(e).__name__)
-        except OSError:
-            pass
+        except Exception:
+            pass  # the non-zero exit still tells the app it failed
         return 1
 
 
