@@ -62,12 +62,13 @@ The USB Formatter page (sidebar) erases a USB stick and writes one MBR partition
 with FAT32, the format CDJ-2000 decks and Rekordbox USB exports read.
 Pick the stick, set a label (optional), then Format.
 
-- The whole stick is erased. Only USB sticks are listed; internal and system
-  disks never appear.
+- The whole stick is erased. Only USB drives are listed (USB sticks, hard
+  disks and card readers under 2 TB); internal and system disks never appear.
 - Windows won't make FAT32 volumes above 32 GB, which is why this page exists.
   It works on any stick size.
 - Windows asks for administrator permission (UAC) when you press Erase. If you
-  decline, nothing is changed.
+  decline, nothing is changed. Since formatting runs with admin rights, run
+  the app from a folder only you can write to.
 - To enable Erase you type the stick's drive letter, as shown in the
   confirmation dialog. The stick is checked again (serial number and size)
   right before it is erased; if it changed, nothing is erased.
