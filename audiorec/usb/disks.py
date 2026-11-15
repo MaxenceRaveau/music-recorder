@@ -11,12 +11,18 @@ or missing is treated as "not safe" and excluded.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from typing import Any, Callable
 
 MAX_SIZE = 2 * 1024**4
 _USB_BUS_TYPE = 7
+# Absolute path: an elevated process must not resolve executables via cwd/PATH.
+POWERSHELL = os.path.join(
+    os.environ.get("SystemRoot", r"C:\Windows"), r"System32\WindowsPowerShell\v1.0\powershell.exe"
+)
+_LIST_TIMEOUT = 60
 _FORBIDDEN_LABEL_CHARS = set('"*+,./:;<=>?[' + chr(92) + ']|')
 _MAX_LABEL = 11
 _DEFAULT_LABEL = "REKORDBOX"
@@ -55,8 +61,21 @@ class UsbDisk:
         )
 
 
+def _label_char_ok(c: str) -> bool:
+    # Control characters and anything outside the OEM code page are invalid in
+    # a FAT label.
+    if ord(c) < 0x20 or ord(c) == 0x7F:
+        return False
+    try:
+        c.encode("cp437")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def clean_label(text: str) -> str:
-    kept = "".join(c for c in text.upper() if c not in _FORBIDDEN_LABEL_CHARS)
+    kept = "".join(c for c in text if _label_char_ok(c)).upper()
+    kept = "".join(c for c in kept if c not in _FORBIDDEN_LABEL_CHARS)
     kept = kept[:_MAX_LABEL].strip()
     return kept or _DEFAULT_LABEL
 
@@ -128,13 +147,18 @@ def parse_disks(text: str) -> list[UsbDisk]:
 def list_usb_disks(
     run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
 ) -> list[UsbDisk]:
-    proc = run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", LIST_SCRIPT],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
+    try:
+        proc = run(
+            [POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", LIST_SCRIPT],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_LIST_TIMEOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Listing USB sticks timed out") from None
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr)
     return parse_disks(proc.stdout)

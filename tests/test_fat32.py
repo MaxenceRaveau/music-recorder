@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pytest
 
 from audiorec.usb.fat32 import (
@@ -107,16 +109,18 @@ class _ZeroWriter(_ShortWriter):
     def write(self, data):
         return 0
 
-
+
+NOW = datetime(2026, 1, 2, 3, 4, 6)
+
 def test_short_writes_still_produce_complete_image(tmp_path):
     lay = compute_layout(81_920, hidden_sectors=0, label="REKORDBOX", volume_id=7, sectors_per_cluster=1)
     full, short = tmp_path / "a.img", tmp_path / "b.img"
     with open(full, "wb") as f:
         f.truncate(81_920 * 512)
-        write_volume(f, lay)
+        write_volume(f, lay, now=NOW)
     with open(short, "wb") as f:
         f.truncate(81_920 * 512)
-        write_volume(_ShortWriter(f, 1000), lay)
+        write_volume(_ShortWriter(f, 1000), lay, now=NOW)
     assert full.read_bytes() == short.read_bytes()
 
 

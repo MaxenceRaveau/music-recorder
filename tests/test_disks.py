@@ -117,3 +117,24 @@ def test_clean_label(raw, out):
 
 def test_clean_label_removes_backslash_and_brackets():
     assert clean_label("a" + chr(92) + "b[c]d|e\"f") == "ABCDEF"
+
+
+def test_clean_label_drops_control_and_non_cp437_characters():
+    assert clean_label("a\x01b") == "AB"
+    assert clean_label("\u4e2dx") == "X"
+
+
+def test_list_usb_disks_uses_absolute_powershell_and_reports_timeout():
+    from audiorec.usb.disks import POWERSHELL
+
+    seen = {}
+
+    def fake(cmd, **kw):
+        seen["cmd"], seen["kw"] = cmd, kw
+        raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        list_usb_disks(run=fake)
+    assert seen["cmd"][0] == POWERSHELL
+    assert POWERSHELL.lower().endswith("powershell.exe")
+    assert seen["kw"]["errors"] == "replace"

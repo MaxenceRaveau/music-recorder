@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import struct
 import time
+from datetime import datetime
 from dataclasses import dataclass
 from typing import BinaryIO, Callable
 
@@ -126,6 +127,8 @@ def write_volume(
     dev: BinaryIO,
     layout: Fat32Layout,
     progress: Callable[[float], None] = lambda f: None,
+    *,
+    now: datetime | None = None,
 ) -> None:
     cluster_bytes = layout.sectors_per_cluster * SECTOR
     fat_bytes = layout.fat_sectors * SECTOR
@@ -162,7 +165,7 @@ def write_volume(
     for i in range(layout.num_fats):
         write_at((layout.reserved_sectors + i * layout.fat_sectors) * SECTOR, fat_bytes, fat_head)
 
-    wtime, wdate = _dos_time_date(time.localtime())
+    wtime, wdate = _dos_time_date((now or datetime.now()).timetuple())
     label_entry = _label11(layout.label) + b"\x08" + bytes(10) + struct.pack("<HH", wtime, wdate)
     root_offset = (layout.reserved_sectors + layout.num_fats * layout.fat_sectors) * SECTOR
     write_at(root_offset, cluster_bytes, label_entry)
