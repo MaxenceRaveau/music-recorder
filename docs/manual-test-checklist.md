@@ -22,3 +22,12 @@ Run `python recorder_gui.py` and play a real song (for example in Spotify).
 - [ ] 18. Import the destination folder into Rekordbox: tracks, folders and tags show, and a converted track plays. If a CDJ-2000 is available, copy to USB and play one track on it.
 - [ ] 19. Convert a 24-bit source (for example a 96 kHz/24-bit FLAC or WAV) with WAV as the format; play the output on a CDJ-2000 (or, without one, import it into Rekordbox): it plays and its title and artist show.
 - [ ] 20. Convert a few tracks with AIFF as the format; play one on a CDJ-2000 (or import into Rekordbox): it plays and its title and artist show.
+- [ ] 21. USB Formatter: the stick list shows only USB sticks; internal disks are absent.
+- [ ] 22. Format a 16 GB stick and a 64 GB+ stick (with a label): Format…, type the drive letter, Erase, accept UAC; the progress bar moves, the status ends with "E: is ready — FAT32 …" (E stands for the stick's drive letter), and no "You need to format the disk" popup appears mid-format. Explorer then shows the stick as FAT32 with the chosen label.
+- [ ] 23. Label with accents and lowercase, for example "Été mix": it is cleaned to `ÉTÉ MIX` before the format.
+- [ ] 24. Press Erase, then decline UAC: nothing is changed and the stick is as it was.
+- [ ] 25. Type a wrong drive letter: Erase stays disabled. Type the right one: Erase enables.
+- [ ] 26. After confirming, unplug or swap the stick before the format starts: "The selected stick changed. Nothing was erased."
+- [ ] 27. Format a stick, import a track into Rekordbox and export it to the stick; the track is listed on it.
+- [ ] 28. Play that stick on a CDJ-2000: it reads the stick and plays the track.
+- [ ] 29. Quit during a format: the question appears; No keeps the app open; Yes closes it, and the format still completes in the background (check the stick in Explorer afterwards).
