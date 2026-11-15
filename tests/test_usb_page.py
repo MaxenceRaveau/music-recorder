@@ -205,6 +205,7 @@ def test_helper_error_shown(qtbot, make_page):
     qtbot.waitUntil(lambda: page.status_label.text() == "Format failed: Access is denied.")
     assert "#b35c00" in page.status_label.styleSheet()
     assert launch.calls.count("close") == 1
+    qtbot.waitUntil(lambda: page._thread is None and len(page.listed) == 2)
     assert page.format_button.isEnabled()
 
 
@@ -227,6 +228,7 @@ def test_wait_error_treated_as_failure(qtbot, make_page):
     page.format_button.click()
     qtbot.waitUntil(lambda: page.status_label.text().startswith("Format failed:"))
     assert launch.calls.count("close") == 1
+    qtbot.waitUntil(lambda: page._thread is None and len(page.listed) == 2)
     assert page.format_button.isEnabled()
 
 
