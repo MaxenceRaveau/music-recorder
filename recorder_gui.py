@@ -21,6 +21,7 @@ from audiorec.gui.app_window import AppWindow
 from audiorec.gui.converter_page import ConverterPage
 from audiorec.gui.main_window import MainWindow, PyAudioDeviceProvider
 from audiorec.gui.settings import AppSettings
+from audiorec.gui.usb_page import UsbPage
 from audiorec.session import default_root
 
 
@@ -66,7 +67,8 @@ def main() -> int:
     app.aboutToQuit.connect(provider.close)
     settings = AppSettings()
     recorder = MainWindow(settings, default_root(), provider)
-    window = AppWindow(recorder, [("Converter", ConverterPage(settings))])
+    window = AppWindow(recorder, [("Converter", ConverterPage(settings)),
+                                  ("USB Formatter", UsbPage())])
     window.show()
     QTimer.singleShot(0, window.check_leftovers)
     code = app.exec()
