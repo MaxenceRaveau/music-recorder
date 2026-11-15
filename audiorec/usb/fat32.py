@@ -12,6 +12,7 @@ touched, so a "format" is a quick one.
 from __future__ import annotations
 
 import struct
+import time
 from dataclasses import dataclass
 from typing import BinaryIO, Callable
 
@@ -64,6 +65,7 @@ def compute_layout(
     tmp2 = (256 * sectors_per_cluster + num_fats) // 2
     fat_sectors = (tmp1 + tmp2 - 1) // tmp2
     cluster_count = (total_sectors - reserved - num_fats * fat_sectors) // sectors_per_cluster
+    _label11(label)
     if cluster_count < _MIN_CLUSTERS:
         raise ValueError("Volume too small for FAT32")
     if cluster_count > _MAX_CLUSTERS:
@@ -81,7 +83,15 @@ def compute_layout(
 
 
 def _label11(label: str) -> bytes:
-    return label.encode("cp437", errors="replace")[:11].ljust(11, b" ")
+    raw = label.encode("cp437", errors="replace")[:11]
+    if not raw.strip():
+        raise ValueError("Volume label is empty")
+    return raw.ljust(11, b" ")
+
+
+def _dos_time_date(t: time.struct_time) -> tuple[int, int]:
+    return ((t.tm_hour << 11) | (t.tm_min << 5) | (t.tm_sec // 2),
+            (max(t.tm_year - 1980, 0) << 9) | (t.tm_mon << 5) | t.tm_mday)
 
 
 def boot_sector(layout: Fat32Layout) -> bytes:
@@ -130,7 +140,12 @@ def write_volume(
         while written < size:
             n = min(CHUNK, size - written)
             chunk = head[written:written + n].ljust(n, b"\x00") if written < len(head) else bytes(n)
-            dev.write(chunk)
+            view = memoryview(chunk)
+            while view:
+                n_out = dev.write(view)
+                if not n_out:
+                    raise OSError("Device accepted no data")
+                view = view[n_out:]
             written += n
             done += n
             progress(done / total)
@@ -147,7 +162,8 @@ def write_volume(
     for i in range(layout.num_fats):
         write_at((layout.reserved_sectors + i * layout.fat_sectors) * SECTOR, fat_bytes, fat_head)
 
-    label_entry = _label11(layout.label) + b"\x08"
+    wtime, wdate = _dos_time_date(time.localtime())
+    label_entry = _label11(layout.label) + b"\x08" + bytes(10) + struct.pack("<HH", wtime, wdate)
     root_offset = (layout.reserved_sectors + layout.num_fats * layout.fat_sectors) * SECTOR
     write_at(root_offset, cluster_bytes, label_entry)
     dev.flush()

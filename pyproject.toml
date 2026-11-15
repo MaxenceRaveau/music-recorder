@@ -19,7 +19,7 @@ dev = [
     "pyfatfs>=1.1.0",
     "pytest",
     "pytest-qt",
-    "setuptools<81",
+    "setuptools<81",  # pyfatfs imports pkg_resources, removed in setuptools 81
 ]
 
 [tool.uv]
@@ -27,3 +27,8 @@ package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    "ignore:.*pkg_resources.*:UserWarning",
+    "ignore:.*pkg_resources.*:DeprecationWarning",
+    "ignore:.*declare_namespace.*:DeprecationWarning",
+]
